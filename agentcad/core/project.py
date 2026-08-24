@@ -191,15 +191,35 @@ class ProjectStore:
         # write below becomes branch-aware without touching its call sites.
         # None means "no branching": the project directory is the only tree.
         self.branch_resolver: Callable[[str, Path], Path] | None = None
+        # Root resolver (set post-init by `core/tenancy_wiring.install`, the
+        # sibling of the two seams above and installed the same way): answers
+        # the directory THIS request's projects live under, or None for
+        # "today's root". PRD-005 FR5 makes it `<root>/orgs/<org>/<ws>` when
+        # the request carries a tenant, so two orgs may both own a project
+        # called `widget` and neither can address the other's.
+        #
+        # Every path this class composes goes through `_root()`, so a resolver
+        # installed here reaches `.cache/`, `exports/`, `imports/`, `.history/`
+        # and the manifest without any of them learning that tenancy exists —
+        # they all descend from `_locate`/`_resolve`.
+        #
+        # None (the default, and local mode) is byte-for-byte the behaviour
+        # that shipped before PRD-005: `_root()` returns `self.root`, and the
+        # `_external` registrations below stay visible.
+        self.root_resolver: Callable[[], Path | None] | None = None
 
     # ------------------------------------------------------------- projects
 
     def list_projects(self) -> list[dict]:
         found: dict[str, Path] = {}
-        for child in sorted(self.root.iterdir()) if self.root.exists() else []:
+        root = self._root()
+        for child in sorted(root.iterdir()) if root.exists() else []:
             if (child / "project.json").is_file():
                 found[child.name] = child
-        found.update(self._external)
+        if root == self.root:
+            # External registrations are a process-global map with no tenant in
+            # it, so a tenant-rooted store does not see them — see `_root`.
+            found.update(self._external)
         out = []
         for name, path in sorted(found.items()):
             # Report each project as the caller's branch sees it (part counts
@@ -221,8 +241,12 @@ class ProjectStore:
 
     def create(self, name: str) -> Path:
         validate_id(name, "project name")
-        path = self.root / name
-        if path.exists() or name in self._external:
+        # `create=True`: the tenant root is made here, on the first write into
+        # it, and nowhere else. A read path that created it would materialise
+        # `orgs/<org>/<ws>/` for a request that was about to be refused.
+        root = self._root(create=True)
+        path = root / name
+        if path.exists() or (root == self.root and name in self._external):
             raise ConflictError(f"project {name!r} already exists")
         (path / "parts").mkdir(parents=True)
         self._write_manifest(path, _empty_manifest(name))
@@ -1126,10 +1150,53 @@ class ProjectStore:
         resolver = self.branch_resolver
         return canonical if resolver is None else resolver(proj, canonical)
 
+    def _root(self, *, create: bool = False) -> Path:
+        """The directory this request's projects live under.
+
+        ``self.root`` unless a :attr:`root_resolver` is installed *and* answers
+        a path — which in PRD-005 means "this request carries a tenant". The
+        three places a root is composed (:meth:`list_projects`,
+        :meth:`create`, :meth:`_locate`) go through here and nowhere else, so
+        everything derived from them — the manifest, ``.cache/``, ``exports/``,
+        ``imports/``, ``.history/`` and every branch working tree — is
+        tenant-rooted by construction rather than by thirty remembered call
+        sites.
+
+        ``create`` is ``True`` only on the write path. A read that made the
+        directory would leave an ``orgs/<org>/<ws>/`` behind for a request that
+        was about to be refused, and would turn a probe into a side effect.
+
+        **External projects are untenanted.** ``_external`` is a process-global
+        ``{name: absolute path}`` registered by ``open_project``, with no
+        tenant anywhere in it; a tenant-rooted store therefore ignores it
+        entirely (here, in ``list_projects`` and in ``create``) rather than
+        letting one org's ``open_project`` publish a directory into every other
+        org's namespace. ``tenancy_wiring`` refuses the tool outright while a
+        tenant is set, so this is the second of the two locks on that door.
+
+        Never raises for a resolver that misbehaves: a resolver returning
+        something that is not a path is treated as no answer, because failing
+        *closed* here would mean failing to a root nobody chose.
+        """
+        resolver = self.root_resolver
+        if resolver is None:
+            return self.root
+        try:
+            answer = resolver()
+        except Exception:                    # noqa: BLE001 — see the docstring
+            answer = None
+        if answer is None:
+            return self.root
+        root = Path(answer)
+        if create:
+            root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def _locate(self, proj: str) -> Path:
-        if proj in self._external:
+        root = self._root()
+        if root == self.root and proj in self._external:
             return self._external[proj]
-        path = self.root / proj
+        path = root / proj
         if (path / "project.json").is_file():
             return path
         raise NotFoundError(f"project {proj!r} not found")

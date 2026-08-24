@@ -50,11 +50,13 @@ from dataclasses import dataclass, field
 
 from fastapi.responses import JSONResponse
 
+from ..core import authz, tenancy
 from ..core.appmode import AppMode, _hostname
 from ..core.authstore import AuthStore
 from ..core.locks import check_client_id, set_client_id
 from ..core.model import ValidationError
 from ..core.ratelimit import TokenBucket
+from ..core.tenancy import Tenant, TenancyStore
 
 #: The session cookie's name. `HttpOnly`, `SameSite=Lax`, `Path=/`, and
 #: `Secure` whenever the public origin is https (`AppMode.secure_cookies`).
@@ -199,6 +201,18 @@ class Principal:
     #: How the credential arrived. Load-bearing: the CSRF rule exempts
     #: bearers, because a browser cannot attach one cross-site.
     via: str = "cookie"       # "cookie" | "bearer"
+    #: A bearer token's ``{org, workspace, ...}`` scope (PRD-005 FR3), read
+    #: **defensively** off whatever `AuthStore.resolve_token` returns: slice 5
+    #: adds the field, and until it does every token answers ``None`` and every
+    #: reader here takes its untenanted branch. Never trusted as a grant — it
+    #: only *selects* a tenant, which is then checked against the roles
+    #: document like any other selection (:func:`resolve_tenant`).
+    scope: dict | None = None
+    #: The session's active workspace, ``"org/ws"``, if the session row carries
+    #: one. Also defensive: nothing writes it yet (the switcher is slice 8),
+    #: so it is ``None`` everywhere today and the header is the API client's
+    #: way to say the same thing.
+    workspace: str | None = None
 
     @property
     def client_id(self) -> str:
@@ -240,6 +254,22 @@ class SecurityConfig:
                 "SecurityConfig requires a hosted AppMode; local mode is the "
                 "same code path as today and is expressed by passing no "
                 "security= at all, not by a disabled config.")
+
+    def tenancy(self) -> TenancyStore:
+        """The orgs document, on the identity root, built once per config.
+
+        A method and not a constructor argument: every existing caller builds
+        ``SecurityConfig(mode=…, store=…)`` and none of them should have to
+        learn about tenancy to keep working. Memoized on the instance (not as
+        a dataclass field) so equality and ``repr`` are unchanged, and built on
+        ``store.root`` because that is what makes ``orgs.json`` share
+        ``AuthStore``'s flock rather than deadlock against it.
+        """
+        found = self.__dict__.get("_tenancy_store")
+        if found is None:
+            found = TenancyStore(self.store.root)
+            self.__dict__["_tenancy_store"] = found
+        return found
 
     def retry_after_s(self, bucket: TokenBucket) -> int:
         """Seconds until a refused caller may try again.
@@ -365,7 +395,8 @@ def resolve_principal(cfg: SecurityConfig, headers, cookies) -> Principal | None
             if row is None:
                 return None
             return Principal(kind="agent", name=row["name"], role=row["role"],
-                             device=None, via="bearer")
+                             device=None, via="bearer",
+                             scope=_row_field(row, "scope", dict))
 
         secret = cookies.get(SESSION_COOKIE) if cookies else None
         if not secret:
@@ -375,9 +406,263 @@ def resolve_principal(cfg: SecurityConfig, headers, cookies) -> Principal | None
             return None
         return Principal(kind="user", name=row["handle"], role=row["role"],
                          device=_device(headers, row.get("device")),
-                         via="cookie")
+                         via="cookie",
+                         workspace=_row_field(row, "active_workspace", str)
+                         or _row_field(row, "workspace", str))
     except Exception:                       # noqa: BLE001 — fail closed
         return None
+
+
+#: The header an API client uses to say which workspace it is talking to.
+#: ``org/ws``, one slash, both halves the ``ID_RE`` grammar. Lower-cased
+#: because ASGI headers are.
+WORKSPACE_HEADER = "x-agentcad-workspace"
+
+#: Route templates under this prefix are **not** the generic ``{proj}`` shape:
+#: `/git/{org}/{ws}/{proj}.git/…` carries its own tenant in the URL and is
+#: floored by `routes_sync.require_role`, which `tenancy_wiring` wires. Letting
+#: the matcher below read its `{proj}` would apply *this request's* tenant to
+#: another one's path.
+_SYNC_PREFIX = "/git/"
+
+#: Which path parameter names a project. Two spellings because the API packs
+#: use `{proj}` and nothing forbids a future pack from spelling it out.
+_PROJECT_PARAMS = ("proj", "project")
+
+
+def resolve_tenant(cfg: SecurityConfig, principal: Principal | None, headers
+                   ) -> tuple[Tenant | None, JSONResponse | None]:
+    """This request's ``(org, workspace)``, or a refusal to return.
+
+    Precedence, and the reason for each rung:
+
+    1. **A bearer token's scope.** A scoped token *is* a tenant statement made
+       by the admin who minted it, so nothing the caller sends may redirect it
+       — the header is not even read when a scope is present, and the
+       membership check below is not applied to it (FR3: an agent is never an
+       org member, so requiring membership would make every token unusable).
+    2. **``X-Agentcad-Workspace: org/ws``** — how an API client, the MCP
+       server and a browser that has switched workspaces say where they are.
+    3. **The session's active workspace**, when the session row carries one
+       (slice 8's switcher writes it; today it never does).
+    4. **The principal's own memberships**, when they name exactly one
+       ``(org, workspace)`` — a single-org instance then needs no header at
+       all. With several, the alphabetically first is the default, stated here
+       rather than discovered: dropping such a caller to the untenanted root
+       instead would quietly create their projects outside every org.
+    5. Otherwise **``None``** — local mode, and a hosted instance with no orgs
+       (a PRD-005a instance), which is byte-for-byte what it was.
+
+    **Every rung is checked against the roles document.** A selection is only
+    a selection; the answer to "may this principal be there at all" is
+    ``authz.role_of(..., proj=None)``, and a selection that fails it is a
+    **name-free 404** rather than a 403 — a 403 would confirm that the org and
+    workspace exist, which is the existence oracle FR5 forbids. A malformed
+    header is the one exception: it is a client bug, it confirms nothing, and
+    it gets a 400 that says so.
+    """
+    if principal is None:
+        return None, None
+    store = cfg.tenancy()
+    who = principal.client_id
+
+    scoped = _scope_tenant(principal.scope)
+    if scoped is not None:
+        # **A scope is not caller input**: it is a field of the credential the
+        # admin minted, so it *places* the request without a membership check
+        # — an agent principal has no org default by design (FR3), so asking
+        # for one here would make every scoped token unusable. What the token
+        # may then do is still decided per project, by an explicit grant.
+        # Existence is checked, name-free, so a scope pointing at a deleted
+        # workspace fails as a miss rather than as a root nobody chose.
+        if not store.has_workspace(scoped[0], scoped[1]):
+            return None, _deny(404, "NotFoundError", "no such workspace", {})
+        return scoped, None
+
+    selected = None
+    raw = (headers.get(WORKSPACE_HEADER) or "").strip() if headers else ""
+    if raw:
+        try:
+            selected = parse_workspace(raw)
+        except ValidationError as exc:
+            return None, _deny(400, "ValidationError", exc.message,
+                               exc.details)
+    elif principal.workspace:
+        selected = _scope_tenant({"workspace": principal.workspace})
+
+    if selected is None:
+        return _default_tenant(store, who), None
+
+    if authz.role_of(store, who, selected[0], selected[1]) is None:
+        # Name-free: the same answer whether the org does not exist, the
+        # workspace does not, or this principal simply holds nothing there.
+        return None, _deny(404, "NotFoundError", "no such workspace", {})
+    return selected, None
+
+
+def parse_workspace(raw: object) -> Tenant:
+    """``"acme/main"`` -> ``("acme", "main")``, or ``ValidationError``.
+
+    Exactly one slash and both halves through ``tenancy.check_name``, because
+    the pair composes into a directory path and into a lock key.
+    """
+    if not isinstance(raw, str) or raw.count("/") != 1:
+        raise ValidationError(
+            f"{WORKSPACE_HEADER} must be 'org/workspace'",
+            {"header": WORKSPACE_HEADER})
+    org, _, workspace = raw.partition("/")
+    return (tenancy.check_name(org, "org"),
+            tenancy.check_name(workspace, "workspace"))
+
+
+def _scope_tenant(scope: object) -> Tenant | None:
+    """``(org, workspace)`` out of a token scope, or ``None``.
+
+    Total over the value on purpose (PRD-012's lesson): the scope is written by
+    a slice that has not landed, read on every request, and a shape we did not
+    expect must resolve as *no selection* rather than raise inside the guard.
+    A scope naming an org but no workspace is not a tenant — it is a token that
+    still has to be told which workspace, and the header may say so.
+    """
+    if not isinstance(scope, dict):
+        return None
+    org = scope.get("org")
+    workspace = scope.get("workspace") or scope.get("ws")
+    if workspace is None and isinstance(org, str) and "/" in org:
+        org, _, workspace = org.partition("/")
+    try:
+        if isinstance(org, str) and isinstance(workspace, str):
+            return (tenancy.check_name(org, "org"),
+                    tenancy.check_name(workspace, "workspace"))
+    except ValidationError:
+        return None
+    return None
+
+
+def _default_tenant(store: TenancyStore, who: str) -> Tenant | None:
+    """The principal's own workspace when they have one, else ``None``.
+
+    Sorted, so "the first" is a fact and not an artifact of dict order. An
+    agent principal is never an org member (``tenancy.handle_of``), so a token
+    with no scope resolves to no tenant — conservative, and the direction a
+    token should fail in.
+    """
+    try:
+        for org in store.orgs_for(who):
+            for workspace in store.list_workspaces(org):
+                return (org, str(workspace["id"]))
+    except Exception:                       # noqa: BLE001 — a broken document
+        return None                         # denies rather than raises
+    return None
+
+
+# ------------------------------------------------------- project-route floor
+
+def _template_regex(template: str) -> "re.Pattern | None":
+    """A regex over concrete paths for one route template, or ``None``.
+
+    ``None`` when the template binds no project parameter. The group is named
+    ``proj`` whichever spelling the template used, so the caller reads one
+    name.
+    """
+    pattern, found = "", False
+    for piece in re.split(r"(\{[^{}]*\})", template):
+        if not piece:
+            continue
+        if piece.startswith("{") and piece.endswith("}"):
+            name, _, converter = piece[1:-1].partition(":")
+            body = ".+" if converter == "path" else "[^/]+"
+            if name in _PROJECT_PARAMS and not found:
+                found = True
+                pattern += f"(?P<proj>{body})"
+            else:
+                pattern += body
+        else:
+            pattern += re.escape(piece)
+    return re.compile(f"^{pattern}/?$") if found else None
+
+
+def project_routes(app) -> tuple[frozenset[str], tuple]:
+    """``(literal paths, compiled {proj} matchers)`` for *app*, computed once.
+
+    Built from the app's own routes rather than from a hand-kept prefix list,
+    so a route pack that mounts project-bound routes somewhere new is floored
+    the day it lands. It walks ``include_context`` the way
+    ``tests/conftest.flatten_routes`` does, because FastAPI does not flatten
+    ``include_router`` and a naive ``app.routes`` walk sees 23 routes of 83.
+
+    The literal set is consulted first and it is load-bearing: ``POST
+    /api/projects/open`` matches ``/api/projects/{proj}``, and reading it as a
+    project called ``open`` would demand a role on a project nobody has.
+
+    Cached on ``app.state`` — the app is the thing that owns the answer, and a
+    module-level cache would be wrong in a process serving two apps (the test
+    suite's normal state).
+    """
+    cached = getattr(app.state, "_agentcad_project_routes", None)
+    if cached is not None:
+        return cached
+    literals: set[str] = set()
+    matchers: list = []
+    seen: set[str] = set()
+
+    def walk(routes, prefix=""):
+        for route in routes:
+            context = getattr(route, "include_context", None)
+            if context is not None:                 # FastAPI's _IncludedRouter
+                walk(context.included_router.routes,
+                     prefix + (getattr(context, "prefix", "") or ""))
+                continue
+            path = getattr(route, "path", None)
+            if not isinstance(path, str):
+                continue
+            template = prefix + path
+            if template in seen:
+                continue
+            seen.add(template)
+            if template.startswith(_SYNC_PREFIX):
+                continue                            # its own tenant, its own floor
+            if "{" not in template:
+                literals.add(template.rstrip("/") or "/")
+                continue
+            compiled = _template_regex(template)
+            if compiled is not None:
+                matchers.append(compiled)
+
+    walk(getattr(app, "routes", []) or [])
+    answer = (frozenset(literals), tuple(matchers))
+    try:
+        app.state._agentcad_project_routes = answer
+    except Exception:                       # noqa: BLE001 — an app without state
+        pass
+    return answer
+
+
+def project_of(app, path: str) -> str | None:
+    """The project this request addresses, or ``None`` if it addresses none."""
+    if not isinstance(path, str) or not path:
+        return None
+    if (path.rstrip("/") or "/") in project_routes(app)[0]:
+        return None
+    for matcher in project_routes(app)[1]:
+        found = matcher.match(path)
+        if found is not None:
+            return found.group("proj")
+    return None
+
+
+def _row_field(row: object, key: str, kind: type):
+    """``row[key]`` when it is a *kind*, else ``None``.
+
+    The identity documents grow fields in later slices (a token's scope, a
+    session's active workspace) and this file must read them before they
+    exist and survive them arriving misshapen. One helper so that "read it
+    defensively" is a fact about the code rather than a promise in a comment.
+    """
+    if not isinstance(row, dict):
+        return None
+    found = row.get(key)
+    return found if isinstance(found, kind) else None
 
 
 def _device(headers, stored: str | None) -> str | None:
@@ -409,6 +694,7 @@ def guard(cfg: SecurityConfig | None, request) -> JSONResponse | None:
         return None
     _config_var.set(cfg)
     _principal_var.set(None)
+    tenancy.tenant_var.set(None)
 
     host = _hostname(request.headers.get("host", ""))
     if host != cfg.mode.origin_host:
@@ -465,7 +751,65 @@ def guard(cfg: SecurityConfig | None, request) -> JSONResponse | None:
         # the alternative to refusing an over-long identity is a silent
         # identity MERGE in the claim map and the roster.
         return _deny(400, "ValidationError", exc.message, exc.details)
+
+    # Tenancy (PRD-005 FR5), beside `set_client_id` and for the same reason:
+    # this is the one place a request's ambient identity is established, and
+    # everything downstream — the store's root resolver, the lock keys, the
+    # event stamp — reads the ContextVar rather than being handed a tenant.
+    #
+    # The ContextVar is set here, in the middleware, and never reset: Starlette
+    # runs the downstream app in a task whose context is COPIED from this one,
+    # so a reset afterwards would restore a variable the endpoint never saw,
+    # and every hosted request passes through this line before it can read one.
+    tenant, refusal = resolve_tenant(cfg, principal, request.headers)
+    if refusal is not None:
+        return refusal
+    tenancy.tenant_var.set(tenant)
+    if tenant is None:
+        return None                          # no orgs: a PRD-005a instance
+
+    # The read floor (FR6). A route that binds a project needs `view` on it —
+    # one rule over the mounted routes, not a per-route table, because a
+    # per-route table is a second place to get it wrong. Mutation floors are
+    # NOT here: they are the tool registry's wrapper and the store's write
+    # guard (`core/tenancy_wiring.py`), both of which see the operation rather
+    # than guessing it from a method.
+    proj = project_of(request.app, request.url.path)
+    if proj is None:
+        return None
+    try:
+        authz.require(cfg.tenancy(), "view", principal.client_id,
+                      tenant[0], tenant[1], proj)
+    except authz.PermissionError as exc:
+        # 403 and not 404: the caller can already see this workspace (they
+        # resolved a tenant in it), so the honest answer is which role they
+        # need. It is `require`'s message that stays existence-free.
+        return _deny(403, "PermissionError", exc.message, exc.details)
+    except Exception:                        # noqa: BLE001 — never a 500 here
+        return _deny(403, "PermissionError", "not permitted", {})
     return None
+
+
+class _ws_headers:
+    """``ws.headers``, with ``?workspace=org/ws`` standing in for the header.
+
+    A browser cannot set a header on a ``WebSocket`` — the API has no room for
+    one — so the query string is the only way a switched workspace can reach
+    the socket before the session carries an active one. Reading it here rather
+    than in ``app.py`` keeps the ``/ws`` route untouched.
+    """
+
+    def __init__(self, ws) -> None:
+        self._ws = ws
+
+    def get(self, key, default=None):
+        found = self._ws.headers.get(key, None)
+        if found is None and key == WORKSPACE_HEADER:
+            try:
+                found = self._ws.query_params.get("workspace")
+            except Exception:               # noqa: BLE001 — no query params
+                found = None
+        return default if found is None else found
 
 
 def guard_websocket(cfg: SecurityConfig | None, ws) -> bool:
@@ -480,6 +824,7 @@ def guard_websocket(cfg: SecurityConfig | None, ws) -> bool:
         return True
     _config_var.set(cfg)
     _principal_var.set(None)
+    tenancy.tenant_var.set(None)
     if _hostname(ws.headers.get("host", "")) != cfg.mode.origin_host:
         return False
     origin = ws.headers.get("origin")
@@ -493,4 +838,15 @@ def guard_websocket(cfg: SecurityConfig | None, ws) -> bool:
         set_client_id(check_client_id(principal.client_id))
     except ValidationError:
         return False
+    # The connection's tenant, resolved once, here — and this is what the
+    # event filter binds to. `/ws` subscribes to the bus on the next line of
+    # `app.py`, in this same context, so `tenancy_wiring`'s subscribe wrapper
+    # reads exactly the tenant established for this socket (there is no
+    # per-message request to re-read it from). A refusal answers `False`: a
+    # websocket has no body to put a 404 in, and a socket we cannot place is
+    # a socket we must not fan events to.
+    tenant, refusal = resolve_tenant(cfg, principal, _ws_headers(ws))
+    if refusal is not None:
+        return False
+    tenancy.tenant_var.set(tenant)
     return True
