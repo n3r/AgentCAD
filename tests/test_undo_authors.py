@@ -489,7 +489,33 @@ def test_reverting_an_already_reverted_commit_is_refused(tmp_path):
     assert history._run(proj, "status", "--porcelain").stdout.strip() == ""
 
 
-def test_a_failure_after_the_patch_applied_leaves_nothing_behind(tmp_path):
+def test_a_hostile_repo_pre_commit_hook_is_ignored_by_the_history_engine(tmp_path):
+    """The PRD-005 RCE fix pins ``core.hooksPath=/dev/null`` on the history
+    engine's git, so a ``.history/hooks/pre-commit`` that a hostile push might
+    land can never execute during an internal snapshot/revert. Proven by a hook
+    that would both fail *and* run code being a no-op: the revert succeeds and
+    the marker is never written.
+    """
+    history = ProjectHistory()
+    proj = tmp_path / "demo"
+    (proj / "parts").mkdir(parents=True)
+    (proj / "parts" / "a.py").write_text("A1\n", encoding="utf-8")
+    history.snapshot(proj, "base")
+    (proj / "parts" / "a.py").write_text("A2\n", encoding="utf-8")
+    target = history.snapshot(proj, "edit a")
+
+    marker = tmp_path / "HOOK_FIRED"
+    hook = proj / ".history" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    new = history.revert(proj, target)  # the pinned engine ignores the hook
+    assert new  # a real commit id — the revert committed
+    assert not marker.exists()  # the hostile hook never executed
+
+
+def test_a_failure_after_the_patch_applied_leaves_nothing_behind(tmp_path, monkeypatch):
     """K2: "never a partial apply" has to hold on the way OUT too.
 
     ``git revert --no-commit`` succeeds, and then the commit behind it fails —
@@ -511,14 +537,26 @@ def test_a_failure_after_the_patch_applied_leaves_nothing_behind(tmp_path):
     before_head = history.head(proj)
     before_tree = history._run(proj, "rev-parse", "HEAD^{tree}").stdout.strip()
 
-    hook = proj / ".history" / "hooks" / "pre-commit"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-    hook.chmod(0o755)
+    # The failure trigger is the commit behind the applied inverse patch, not a
+    # repo hook: the PRD-005 RCE fix pins core.hooksPath=/dev/null on the
+    # history engine (a poisoned .history/hooks/ must never run — see the
+    # companion test above), so a pre-commit hook can no longer reject the
+    # commit. Failing the commit call directly reproduces the same state the
+    # review's scenario did — the inverse patch applied and staged, then the
+    # commit fails — which is what _rollback_revert must undo cleanly.
+    real_run = history._run
+
+    def fail_on_commit(path, *args, **kwargs):
+        if args and args[0] == "commit":
+            raise HistoryError("simulated commit failure after the patch applied")
+        return real_run(path, *args, **kwargs)
+
+    monkeypatch.setattr(history, "_run", fail_on_commit)
 
     with pytest.raises(HistoryError):
         history.revert(proj, target)
 
+    monkeypatch.undo()  # the atomicity assertions below use real git
     assert history.head(proj) == before_head
     assert history._run(
         proj, "rev-parse", "HEAD^{tree}").stdout.strip() == before_tree
