@@ -1,4 +1,4 @@
-# 0322 — Roadmap: sync the sequencing narrative with the parallel landings
+# 0341 — Roadmap: sync the sequencing narrative with the parallel landings
 
 - **Commit:** pending
 - **Date:** 2026-08-24
@@ -19,10 +19,9 @@ shell/navigation pair (026/027), and 029.
 
 ## Files
 - `docs/roadmap.md` — the sequencing narrative paragraph
-- `docs/changelog/0322-roadmap-sync.md` — this entry
+- `docs/changelog/0341-roadmap-sync.md` — this entry
 
 ## Notes
-No code, no tests. `make test` not run for a docs-only narrative edit; the
-newest code-bearing entry (0321) carries the last measured count — this
+No code, no tests. `make test` not run for a docs-only narrative edit; the last measured count stands — this
 note exists so the count-guards read an explicit statement: prior merged
 tree measured 5638 passed (0319).
