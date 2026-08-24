@@ -3,7 +3,10 @@
 Commands:
     agentcad serve [--host H] [--port N] [--projects-dir P] [--no-open]
     agentcad open                    # serve + open the browser
-    agentcad mcp                     # MCP stdio server (proxies the HTTP API)
+    agentcad mcp [--remote URL [--token T]]   # MCP stdio server (a proxy)
+    agentcad login <url> [--token T] # store an instance token, 0600
+    agentcad clone <url> [dest]      # clone a hosted project (PRD-005)
+    agentcad push|pull|status [dir]  # sync a clone with its instance
     agentcad new <name>              # create a project
     agentcad export <project> <part> --format step|stl|3mf [--config NAME] [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
@@ -423,6 +426,7 @@ def _serve_bind(args, mode) -> tuple[str, int]:
 def cmd_serve(args, open_browser: bool) -> None:
     import uvicorn
 
+    from .core import tenancy_wiring
     from .core.tools import build_registry
     from .server import security as security_module
     from .server.app import create_app
@@ -465,6 +469,14 @@ def cmd_serve(args, open_browser: bool) -> None:
     try:
         _refuse_state_dir_in_a_write_root(mode, service)
         registry = build_registry(service)
+        # PRD-005 FR5/FR6: the tenancy wrappers (store root resolver, lock-key
+        # qualification, the write-guard and tool-registry floors, the event
+        # tenant stamp/filter, the sync seams). Installed HERE because this is
+        # the one place that holds the service, the registry and the security
+        # config at once — and after `build_registry`, because the versioning
+        # pack replaces `write_guard` while registering. Every wrapper no-ops
+        # until a request carries a tenant, so a local `serve` is unchanged.
+        tenancy_wiring.install(service, registry)
         chat_engine = _make_chat_engine(service, registry)
         app = create_app(service, registry, chat_engine, security=security)
         _warn_if_unconfined(mode, service.kernel)
@@ -600,8 +612,49 @@ def _uvicorn_proxy_kwargs(mode) -> dict:
 
 
 def cmd_mcp(args) -> None:
+    """The MCP stdio server. ``--remote`` points it at a hosted instance.
+
+    There is nothing to build for the remote case and that is the design, not a
+    shortcut: ``agent/mcp_server.py`` has **always** been a proxy — it mirrors
+    ``GET /api/tools`` and turns every ``call_tool`` into
+    ``POST /api/tools/{name}`` — so "run the MCP server against a hosted
+    instance" is entirely a question of which base URL and which bearer it
+    uses. Both are already inputs (``AGENTCAD_URL``, ``AGENTCAD_TOKEN``);
+    PRD-005 FR10 makes them flags, resolves the token from ``agentcad login``
+    when it is not given, and leaves local mode byte-identical.
+
+    Two honest limits, stated because an agent should know them:
+
+    * **Every tool call is a network round trip.** A local run talks to
+      127.0.0.1; this one crosses the internet on every call, and a build that
+      takes 300 ms locally takes 300 ms plus the round trip here.
+    * A remote instance is never auto-started. ``mcp_server._may_autostart``
+      already refuses to start a *local* server because a *remote* one is
+      unreachable — quietly driving an empty machine that is not the one the
+      operator configured is a worse outcome than an error.
+    """
     from .agent.mcp_server import run_mcp_server
 
+    if args.remote:
+        from .core import sync
+
+        try:
+            instance = sync.instance_of(args.remote)
+        except ValueError as exc:
+            print(f"agentcad mcp: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+        token = (args.token or sync.token_for(instance)
+                 or os.environ.get("AGENTCAD_TOKEN") or "").strip()
+        if not token:
+            print(f"agentcad mcp: no token for {instance}. Run "
+                  f"`agentcad login {instance}` (which stores it 0600), pass "
+                  f"--token, or set AGENTCAD_TOKEN.", file=sys.stderr)
+            raise SystemExit(2)
+        # The proxy reads both from the environment, so this is where a
+        # `--token` on the argv stops being visible: it is not passed on to any
+        # child process argv, and `agentcad login` avoids the argv entirely.
+        os.environ["AGENTCAD_URL"] = instance
+        os.environ["AGENTCAD_TOKEN"] = token
     run_mcp_server()
 
 
@@ -1039,6 +1092,14 @@ def _dispatch_admin(args) -> None:
               f"its next use")
         return
 
+    if action == "audit:query":
+        _admin_audit_query(args)
+        return
+
+    if action == "audit:backup":
+        _admin_audit_backup(args)
+        return
+
     if getattr(args, "admin_command", "") == "enrol":
         token = store.mint_enrolment(args.handle)
         print(f"new enrolment link for {args.handle!r} "
@@ -1049,6 +1110,86 @@ def _dispatch_admin(args) -> None:
         return
 
     raise SystemExit(2)
+
+
+# ------------------------------------------------------- audit (PRD-005 FR12)
+
+def _audit_log():
+    """The audit databases, with **no service and no kernel**.
+
+    `_auth_store`'s property, for its reason: `docker compose exec agentcad
+    agentcad admin audit …` has to work while the server is running *and*
+    while it is down. It works while it is running because the store is SQLite
+    in WAL mode with a 30 s busy timeout — the second-writer case that mode
+    exists for (`core/audit.py`) — not because of any lock this process takes.
+    """
+    from .core.appmode import ensure_state_dir
+    from .core.audit import shared
+
+    return shared(ensure_state_dir())
+
+
+def _admin_audit_query(args) -> None:
+    import json
+
+    from .core.audit import parse_time
+
+    log = _audit_log()
+    org = args.org
+    if not log.path_for(org).exists():
+        print(f"no audit log for org {org!r} yet "
+              f"(auth events live in the '_instance' log)")
+        return
+    rows = log.query(org,
+                     principal=args.principal, project=args.project,
+                     action=args.action,
+                     since=parse_time(args.since, "--since"),
+                     until=parse_time(args.until, "--until"),
+                     limit=args.limit)
+    if args.json:
+        print(json.dumps({"org": org, "rows": rows,
+                          "total": log.count(org)}, indent=2))
+        return
+    if not rows:
+        print(f"no matching rows in {org!r} ({log.count(org)} total)")
+        return
+    print(f"{'WHEN (UTC)':<21}{'PRINCIPAL':<34}{'ACTION':<22}"
+          f"{'PROJECT':<18}{'OUTCOME':<18}")
+    for row in rows:
+        print(f"{_audit_when(row['ts']):<21}{row['principal'][:33]:<34}"
+              f"{row['action'][:21]:<22}{(row['project'] or '-')[:17]:<18}"
+              f"{row['outcome'][:17]:<18}")
+    print()
+    print(f"{len(rows)} row(s) of {log.count(org)} in {org!r}, newest first.")
+
+
+def _audit_when(ts: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(float(ts), timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S")
+
+
+def _admin_audit_backup(args) -> None:
+    """`VACUUM INTO`, and the reason it is not `cp`.
+
+    A WAL database keeps recent commits in its `-wal` sidecar: the PRD-005
+    spike copied a 50-row audit database and the copy answered `no such table:
+    audit`. This writes a checkpointed, integrity-checked single file while the
+    server keeps writing, which is what makes it a backup of a *running*
+    instance — and it is the step `docs/deployment.md` adds to the tar-the-
+    volume story, which stays true for the identity JSON and was never true for
+    this.
+    """
+    log = _audit_log()
+    dest = Path(args.dest)
+    if not log.path_for(args.org).exists():
+        print(f"error: no audit log for org {args.org!r}", file=sys.stderr)
+        raise SystemExit(2)
+    log.vacuum_into(args.org, dest)
+    print(f"backed up {args.org!r} -> {dest} "
+          f"({dest.stat().st_size} bytes, integrity: "
+          f"{log.integrity(args.org)})")
 
 
 def cmd_check(args) -> int:
@@ -1606,6 +1747,264 @@ def cmd_skill_lint(args) -> int:
     return 1 if has_errors(findings) else 0
 
 
+# ==========================================================================
+# PRD-005 slice 6 — the sync CLI (FR8-client/FR10).
+#
+# `login`, `clone`, `push`, `pull`, `status` and the plumbing `credential`
+# helper. Everything they do lives in `core/sync.py`; what is here is argument
+# handling, printing and the exit code — plus the one thing only a CLI can do,
+# which is build a real service with a warm kernel when a divergent pull has to
+# drive the PRD-001 merge machinery.
+#
+# Exit codes, the `check` convention: 0 it worked · 1 a refusal the user can
+# act on (the server said no, a merge has conflicts, a branch diverged) ·
+# 2 the harness could not answer (a bad URL, no git, an unreachable instance).
+# ==========================================================================
+
+def _sync_error(command: str, exc) -> int:
+    """Print a sync failure the way the server said it, then exit 1.
+
+    The ``remote:`` lines are printed **first and verbatim**: the pre-receive
+    hook's ``agentcad: refs/heads/master diverged — pull and merge, never
+    force`` is the actionable sentence, and re-wording it here would be
+    inventing a second, worse error message (see `core/sync.remote_lines`).
+    """
+    for line in getattr(exc, "remote", []) or []:
+        print(f"{command}: remote: {line}", file=sys.stderr)
+    print(f"{command}: {exc}", file=sys.stderr)
+    return 1
+
+
+def _sync_target(args) -> Path:
+    """The project directory a sync command works on (default: the cwd)."""
+    return Path(getattr(args, "dir", None) or ".").expanduser().resolve()
+
+
+def _not_a_project(command: str, target: Path) -> bool:
+    """True (having said so) when *target* has no history repo.
+
+    Separated from the ``SyncError`` path so it can be **exit 2**: "you are in
+    the wrong directory" is a usage mistake, not a refusal by the other side,
+    and a script that treats every non-zero exit as "the server said no" should
+    not be told those two apart only by reading English.
+    """
+    if (target / ".history").is_dir():
+        return False
+    print(f"{command}: {target} is not an AgentCAD project (no .history/); "
+          "clone one with `agentcad clone <url>` or run this inside a project",
+          file=sys.stderr)
+    return True
+
+
+def cmd_login(args) -> int:
+    """Store an instance token, after proving it works."""
+    from .core import sync
+
+    token = (args.token or os.environ.get("AGENTCAD_TOKEN") or "").strip()
+    if not token:
+        # Read from stdin when it is a pipe, so a token can arrive without ever
+        # being on an argv (where `ps` shows it to every user on the box) or in
+        # a shell history file.
+        if not sys.stdin.isatty():
+            token = sys.stdin.readline().strip()
+    if not token:
+        print("agentcad login: no token. Pass --token, pipe it on stdin, or "
+              "set AGENTCAD_TOKEN. Mint one on the instance with "
+              "`agentcad admin token add <name>`.", file=sys.stderr)
+        return 2
+    try:
+        result = sync.login(args.url, token)
+    except ValueError as exc:
+        print(f"agentcad login: {exc}", file=sys.stderr)
+        return 2
+    except sync.SyncError as exc:
+        return _sync_error("agentcad login", exc)
+    who = result["principal"] or "an unauthenticated local instance"
+    print(f"signed in to {result['instance']} as {who}")
+    print(f"token stored 0600 in {sync.config_path()}")
+    if result["insecure"]:
+        print("warning: that instance is plain http, so the token crosses the "
+              "network in the clear on every push", file=sys.stderr)
+    return 0
+
+
+def cmd_clone(args) -> int:
+    """Clone a hosted project into the ProjectHistory layout."""
+    from .core import sync
+
+    try:
+        parsed = sync.parse_repo_url(args.url)
+    except ValueError as exc:
+        print(f"agentcad clone: {exc}", file=sys.stderr)
+        return 2
+    dest = (Path(args.dest).expanduser() if args.dest
+            else _projects_dir(args) / parsed["project"])
+    if not sync.token_for(args.url) and not args.token:
+        print(f"agentcad clone: not signed in to {parsed['instance']}; run "
+              f"`agentcad login {parsed['instance']}` first (a public instance "
+              f"still clones — this is a warning, not a refusal)",
+              file=sys.stderr)
+    try:
+        result = sync.clone(args.url, dest, token=args.token)
+    except sync.SyncError as exc:
+        return _sync_error("agentcad clone", exc)
+    print(f"cloned {result['project']} into {result['path']} "
+          f"(branch {result['branch']})")
+    return 0
+
+
+def cmd_push(args) -> int:
+    """Push every branch and tag. Never forces, never deletes."""
+    from .core import sync
+
+    target = _sync_target(args)
+    if _not_a_project("agentcad push", target):
+        return 2
+    try:
+        result = sync.push(target)
+    except sync.SyncError as exc:
+        return _sync_error("agentcad push", exc)
+    if not result["updated"]:
+        print(f"everything up to date on {result['remote']}")
+        return 0
+    for update in result["updated"]:
+        print(f"  {update['flag']} {update['ref']}  {update['summary']}")
+    print(f"pushed {len(result['updated'])} ref(s) to {result['remote']}")
+    return 0
+
+
+def cmd_pull(args) -> int:
+    """Fetch, fast-forward what can fast-forward, merge what cannot.
+
+    The kernel is started **lazily and only for a divergence**: a fetch that
+    finds nothing to merge should cost a network round trip, not three seconds
+    of worker spawn. When it is needed, the service is built over the clone's
+    parent directory with the project itself added to the sandbox's writable
+    roots (`cmd_check`'s reasoning: the merge validation pass builds parts, and
+    a confined worker that cannot write `.cache/` fails every one of them).
+    """
+    from .core import sync
+
+    target = _sync_target(args)
+    if _not_a_project("agentcad pull", target):
+        return 2
+    state: dict = {}
+
+    def merger(branch: str, remote_ref: str) -> dict:
+        if "service" not in state:
+            service = _build_service(target.parent,
+                                     extra_writable=[str(target)])
+            state["service"] = service
+            from .core.tools import build_registry
+
+            build_registry(service)     # installs branches + merges (PRD-001)
+            state["proj"] = service.open_project(str(target))["name"]
+        return sync.merge_diverged(state["service"], state["proj"], branch,
+                                   remote_ref, allow_invalid=args.allow_invalid)
+
+    try:
+        result = sync.pull(target, merger=None if args.no_merge else merger)
+    except sync.SyncError as exc:
+        return _sync_error("agentcad pull", exc)
+    except Exception as exc:                    # noqa: BLE001 — harness exit
+        print(f"agentcad pull: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        service = state.get("service")
+        if service is not None:
+            try:
+                service.kernel.stop()
+            except Exception as exc:            # noqa: BLE001
+                print(f"agentcad pull: the kernel did not stop cleanly: {exc}",
+                      file=sys.stderr)
+            _release_work_root(service)
+    return _print_pull(result)
+
+
+def _print_pull(result: dict) -> int:
+    moved = 0
+    for entry in result["branches"]:
+        if entry["action"] == "fast_forward":
+            moved += 1
+            print(f"  {entry['branch']}: fast-forwarded {entry['behind']} "
+                  f"commit(s)")
+        elif entry["action"] == "merged" and "error" not in (entry["merge"] or {}):
+            moved += 1
+            merge = entry["merge"]
+            what = ("already up to date" if merge.get("already_up_to_date")
+                    else f"merged as {str(merge.get('commit') or '')[:8]}")
+            print(f"  {entry['branch']}: {what}")
+    conflicted = result["conflicts"]
+    for entry in conflicted:
+        details = (entry["merge"]["error"].get("details") or {})
+        print(f"agentcad pull: {entry['merge']['error']['message']}",
+              file=sys.stderr)
+        for conflict in details.get("conflicts") or []:
+            key = conflict.get("path") or conflict.get("key")
+            print(f"  {conflict.get('kind', 'file'):<9} {key}", file=sys.stderr)
+        if details.get("hint"):
+            print(f"{details['hint']}", file=sys.stderr)
+    if result["diverged"]:
+        print("agentcad pull: diverged from the server: "
+              + ", ".join(result["diverged"])
+              + ". Nothing was changed — re-run without --no-merge to merge "
+                "them (the merge is staged and kernel-validated; your branch "
+                "moves only when it lands).", file=sys.stderr)
+    if conflicted or result["diverged"]:
+        print("Nothing was overwritten.", file=sys.stderr)
+        return 1
+    if not moved:
+        print("already up to date")
+    return 0
+
+
+def cmd_status(args) -> int:
+    """Ahead/behind per branch against the server."""
+    from .core import sync
+
+    target = _sync_target(args)
+    if _not_a_project("agentcad status", target):
+        return 2
+    try:
+        report = sync.status(target, fetch=args.fetch)
+    except sync.SyncError as exc:
+        return _sync_error("agentcad status", exc)
+    if args.json:
+        import json as _json
+
+        print(_json.dumps(report, indent=2))
+        return 0
+    print(f"{report['path']}  ->  {report['remote'] or '(no remote)'}")
+    for entry in report["branches"]:
+        detail = ""
+        if entry["ahead"] or entry["behind"]:
+            detail = f"  (ahead {entry['ahead']}, behind {entry['behind']})"
+        print(f"  {entry['branch']:<24} {entry['state']}{detail}")
+    if report["tags"]:
+        print(f"  tags: {', '.join(report['tags'])}")
+    if report["dirty"]:
+        print(f"  uncommitted: {len(report['dirty'])} file(s)")
+    return 1 if report["diverged"] else 0
+
+
+def cmd_credential(args) -> int:
+    """``agentcad credential <get|store|erase>`` — git's credential protocol.
+
+    Git runs this; a human never does. It reads a ``key=value`` query on stdin
+    and, for a host we are signed in to, writes back a username and the token
+    — which is why no AgentCAD git call ever puts a token on an argv or in a
+    URL, both of which the PRD-005 spike measured leaking (§A9).
+
+    Stdout is the protocol: nothing else may be printed here.
+    """
+    from .core import sync
+
+    return sync.credential_main(args.action, sys.stdin, sys.stdout)
+
+
+# ===================== end of the PRD-005 slice 6 block ====================
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentcad", description="Agentic-first CAD")
     parser.add_argument("--version", action="version", version=agentcad.__version__)
@@ -1613,7 +2012,7 @@ def main() -> None:
     sub = parser.add_subparsers(
         dest="command",
         metavar="{serve,open,mcp,new,export,check,bench,package,publish,admin,"
-                "materials,skill}")
+                "materials,skill,login,clone,push,pull,status}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -1630,7 +2029,21 @@ def main() -> None:
                             "else ~/AgentCAD/projects)")
         p.add_argument("--no-open", action="store_true")
 
-    sub.add_parser("mcp", help="run the MCP stdio server")
+    p = sub.add_parser("mcp", help="run the MCP stdio server",
+                       description="Expose AgentCAD's tools to an MCP client "
+                                   "over stdio. Without --remote it proxies a "
+                                   "local server (starting one if needed); "
+                                   "with it, a hosted instance.")
+    p.add_argument("--remote", default=None, metavar="URL",
+                   help="proxy this hosted instance instead of a local server "
+                        "(PRD-005 FR10). Every tool call is a network round "
+                        "trip, and a remote instance is never auto-started")
+    p.add_argument("--token", default=None, metavar="TOKEN",
+                   help="bearer token for --remote (default: the one "
+                        "`agentcad login` stored, else $AGENTCAD_TOKEN). "
+                        "NOTE: a token on the command line is visible in `ps` "
+                        "to every user on this machine — prefer `agentcad "
+                        "login`, which never puts it on an argv")
 
     # Hidden: kernel worker loop (used by frozen bundles to re-exec themselves).
     sub.add_parser("worker")
@@ -1789,13 +2202,14 @@ def main() -> None:
                         "publish")
 
     p = sub.add_parser(
-        "admin", help="manage hosted-mode accounts (PRD-005a)",
-        description="Create, list and disable accounts on a hosted instance. "
-                    "Operates directly on the identity state files, so it "
+        "admin", help="manage hosted-mode accounts and the audit log",
+        description="Create, list and disable accounts on a hosted instance, "
+                    "and query or back up the audit log (PRD-005 FR12). "
+                    "Operates directly on the state files, so it "
                     "works over `docker compose exec` with no running server "
                     "and starts no kernel. " + _trust_sentence_capitalized() + ".")
     admin_sub = p.add_subparsers(dest="admin_command",
-                                 metavar="{user,token,enrol}")
+                                 metavar="{user,token,enrol,audit}")
 
     user_p = admin_sub.add_parser(
         "user", help="create, list and disable accounts",
@@ -1858,6 +2272,45 @@ def main() -> None:
                     "stops working.")
     a.add_argument("handle")
 
+    audit_p = admin_sub.add_parser(
+        "audit", help="query and back up the audit log (PRD-005 FR12)",
+        description="The audit log is one SQLite database per org under "
+                    "<state>/audit/. Auth events (sign-ins, enrolments, token "
+                    "mints) are instance-wide and live in the '_instance' "
+                    "log; a tenant's tool activity lives in its own org's. "
+                    "Reads the files directly, so it works over `docker "
+                    "compose exec` with the server running.")
+    audit_sub = audit_p.add_subparsers(dest="admin_action",
+                                       metavar="{query,backup}")
+
+    a = audit_sub.add_parser(
+        "query", help="print audit rows, newest first",
+        description="Filters compose (AND). --since/--until take epoch "
+                    "seconds, an ISO-8601 time, or a window like 7d/24h/30m. "
+                    "--principal matches a person and every device they used: "
+                    "'user:anya' also matches "
+                    "'user:anya/browser:7f3a1b2c'.")
+    a.add_argument("org", help="an org name, or '_instance' for auth events")
+    a.add_argument("--principal", default=None,
+                   help="user:<handle>, agent:<name>, or 'chat'")
+    a.add_argument("--project", default=None)
+    a.add_argument("--action", default=None,
+                   help="e.g. login, create_agent_token, set_part_params")
+    a.add_argument("--since", default=None, metavar="WHEN")
+    a.add_argument("--until", default=None, metavar="WHEN")
+    a.add_argument("--limit", type=int, default=50, metavar="N")
+    a.add_argument("--json", action="store_true", help="machine-readable rows")
+
+    a = audit_sub.add_parser(
+        "backup", help="write a consistent copy of one org's audit log",
+        description="Uses SQLite's VACUUM INTO, NOT a file copy: a WAL "
+                    "database keeps recent commits in its -wal sidecar, so "
+                    "`cp audit.db` can lose every row (measured in the PRD-005 "
+                    "spike). Safe to run against a live server; refuses an "
+                    "existing destination.")
+    a.add_argument("org")
+    a.add_argument("dest", help="destination file (must not exist)")
+
     p = sub.add_parser(
         "materials", help="work with material cards (PRD-028)",
         description="Material library commands. The lint is what the shipped "
@@ -1918,6 +2371,76 @@ def main() -> None:
     skill_lint_p.add_argument("--json", action="store_true",
                               help="print the findings as a JSON list")
 
+    # ------------------------------------------------ PRD-005 sync (slice 6)
+
+    p = sub.add_parser(
+        "login", help="store a token for a hosted instance (PRD-005)",
+        description="Verify a bearer token against an instance and store it "
+                    "in ~/.agentcad/sync.json, mode 0600. Every git call this "
+                    "CLI makes then authenticates through a credential helper "
+                    "— the token is never in a URL, never in a config file "
+                    "inside a clone, and never on a command line.")
+    p.add_argument("url", help="the instance, e.g. https://cad.example.com")
+    p.add_argument("--token", default=None, metavar="TOKEN",
+                   help="the bearer (default: stdin if it is a pipe, else "
+                        "$AGENTCAD_TOKEN). A token passed here is visible in "
+                        "`ps`; piping it is not")
+
+    p = sub.add_parser(
+        "clone", help="clone a hosted project (PRD-005)",
+        description="Clone <instance>/git/<org>/<workspace>/<project>.git into "
+                    "a real AgentCAD project directory — the history repo "
+                    "lands at <dest>/.history, exactly where the app expects "
+                    "it, and never as a .git/ inside the project.")
+    p.add_argument("url", help="the sync url ending in .git")
+    p.add_argument("dest", nargs="?", default=None,
+                   help="where to put it (default: <projects-dir>/<project>)")
+    p.add_argument("--projects-dir", default=None)
+    p.add_argument("--token", default=None, metavar="TOKEN",
+                   help="sign in to the instance first (see `agentcad login`, "
+                        "which is the way that keeps it off `ps`)")
+
+    p = sub.add_parser(
+        "push", help="push branches and tags to the instance (PRD-005)",
+        description="Push every local branch and tag. Never forces, never "
+                    "deletes: a divergence is refused by the server with the "
+                    "message this command prints verbatim, and the fix is "
+                    "`agentcad pull`.")
+    p.add_argument("dir", nargs="?", default=None,
+                   help="the project directory (default: the current one)")
+
+    p = sub.add_parser(
+        "pull", help="fetch and merge the instance's work (PRD-005)",
+        description="Fetch, fast-forward what can fast-forward, and merge what "
+                    "cannot through the kernel-validated merge the UI uses. "
+                    "Conflicts are listed and the branch is left exactly as it "
+                    "was; nothing here resets or overwrites. Exit 0 clean, "
+                    "1 conflicts or an unmerged divergence, 2 harness.")
+    p.add_argument("dir", nargs="?", default=None,
+                   help="the project directory (default: the current one)")
+    p.add_argument("--no-merge", action="store_true",
+                   help="fast-forward only: report a divergence instead of "
+                        "merging it (starts no kernel)")
+    p.add_argument("--allow-invalid", action="store_true",
+                   help="land a merge whose validation pass failed, with the "
+                        "failures recorded in the merge commit")
+
+    p = sub.add_parser(
+        "status", help="ahead/behind against the instance (PRD-005)",
+        description="Per-branch ahead/behind counts against origin, plus tags "
+                    "and uncommitted files. Offline unless --fetch. Exit 1 "
+                    "when a branch has diverged.")
+    p.add_argument("dir", nargs="?", default=None,
+                   help="the project directory (default: the current one)")
+    p.add_argument("--fetch", action="store_true",
+                   help="ask the server first (the default is a purely local "
+                        "comparison against what was last fetched)")
+    p.add_argument("--json", action="store_true")
+
+    # Hidden, like `worker`: git runs this, a human never does.
+    p = sub.add_parser("credential")
+    p.add_argument("action", nargs="?", default="get")
+
     args = parser.parse_args()
     if args.command == "admin":
         cmd_admin(args)
@@ -1944,5 +2467,17 @@ def main() -> None:
         raise SystemExit(cmd_materials(args))
     elif args.command == "skill":
         raise SystemExit(cmd_skill(args))
+    elif args.command == "login":               # PRD-005 slice 6 ↓
+        raise SystemExit(cmd_login(args))
+    elif args.command == "clone":
+        raise SystemExit(cmd_clone(args))
+    elif args.command == "push":
+        raise SystemExit(cmd_push(args))
+    elif args.command == "pull":
+        raise SystemExit(cmd_pull(args))
+    elif args.command == "status":
+        raise SystemExit(cmd_status(args))
+    elif args.command == "credential":
+        raise SystemExit(cmd_credential(args))  # PRD-005 slice 6 ↑
     else:
         parser.print_help()
