@@ -43,6 +43,35 @@ requests, executable specs, geometry CI, cloud with local-first sync,
 review threads). It is what makes a mixed human+agent team safe and is the
 part incumbents structurally cannot copy.
 
+## How the August 2026 UX study shaped this roadmap
+
+A four-round interactive-mockup study (Aug 24–25 2026; internal
+artifacts, adversarially reviewed by two independent reviewers) tested
+the product's UI direction. Every novel paradigm — activity rails,
+node canvases, document-notebooks, dashboards-first, intent-composed
+scenes — was rejected by the founder; what won is **the familiar
+workstation**: desktop-CAD conventions (SolidWorks/Fusion/FreeCAD/Bambu
+Studio) rendered in the product's existing visual language, organized
+around four steps. The study's resolutions landed as PRD updates and
+new PRDs:
+
+| Study outcome | Landed in |
+|---|---|
+| Four tabs in the founder's nouns — Design · Testing · Production · Marketplace; Library folds into Marketplace | PRD-025 (amended: tab set + both honesty invariants) |
+| The Design chassis: feature tree + history timeline + properties + script drawer, three-way selection sync, modeless live-preview feature edits | PRD-034 (new) |
+| Testing as a study manager: persisted setups, results on the model, structural staleness, verdicts feeding checks/CI, joint margins | PRD-035 (new) |
+| Production as a routing plan: print/CNC/order per part, basis-labeled costs, hash-honest readiness, handoff packs | PRD-036 (new) |
+| Bambu-class in-app slicing over external open engines (process boundary, honest previews) | PRD-037 (new) |
+| "Generate the best shape": parametric shape families + optimizer + FEM verification, applied as reviewable features | PRD-038 (new) |
+| MakerWorld-class social loop: galleries, comments, honest ratings, remix-with-lineage, collections | PRD-031c (new) |
+| Review-derived invariants for every surface: state honesty (no stale result renders as current) and affordance honesty (no dead control styled live) | PRD-025 (binding all tabs), inherited by 034–038 |
+
+The study also surfaced one standing tension, recorded rather than
+smuggled: the founder's ask for CNC *programs* meets the in-house-CAM
+non-goal below — PRD-036 ships complete without toolpaths, and any
+bounded 2.5D reconsideration requires an explicit non-goal amendment
+(the PRD-030 retirement precedent).
+
 ## The thesis (unchanged)
 
 1. **The unit of collaboration is the change.** Onshape merges
@@ -155,11 +184,12 @@ commit. The 031a licensing precondition is closed.
 | [015](prd/completed/PRD-015-bom-release-management.md) | BOM & release management — structured BOMs, Rev approval on proposals, immutable release bundles | completed (PR #28, full scope: zero-kernel BOM roll-ups + CSV/JSON + ref-pinned BOM + revisions/gate/finalize + reproducible bundles; per-config part-number override deferred) | analysis | 001 · 002 · 003 |
 | [016](prd/pending/PRD-016-direct-modeling-ux.md) | Direct modeling & measurement UX — measure/sections/overlays, direct ops emitting code, selection-aware chat | pending | analysis + idea 3 | 026 (soft) |
 | [017](prd/completed/PRD-017-interop-pack.md) | Interop pack (neutral) — STEP AP242 PMI export, 3MF metadata, glTF, structured assembly-STEP import, USD flag | completed (PR #31, full scope: AP242 PMI export + structured import/export + deterministic glTF/GLB + 3MF v2 + USD extra + fidelity; nested import onto PRD-013 sub-assemblies and PMI import deferred) | analysis | — |
-| [025](prd/pending/PRD-025-modes-ia.md) | Modes — Build · Test · Produce · Library · Market over one model; process profiles as the "swappable modules" (renamed from "workspaces": tenancy owns that word — PRD-005) | pending | idea 1 | 026 |
+| [025](prd/pending/PRD-025-modes-ia.md) | Modes — Design · Testing · Production · Marketplace over one model (four tabs, Library folded into Marketplace; the founder's nouns, validated by the Aug-2026 UX study); process profiles as the "swappable modules" (container word renamed from "workspaces", and owed one more rename — PRD-005 claimed "mode" too) | pending | idea 1 + UX study (Aug 2026) | 026 |
 | [026](prd/completed/PRD-026-workbench-shell.md) | Workbench shell revamp — dialog system (no native prompts), ⌘K palette over the registry, menus, resizable panels, shortcuts | completed (PR #29, AC1–AC7 verified incl. a live-browser pass; Phase 3 — remapping, layout presets, frecency — deferred) ([design](superpowers/specs/2026-08-19-workbench-shell-design.md) · [plan](superpowers/plans/2026-08-19-workbench-shell.md)) | idea 8 | — |
 | [027](prd/completed/PRD-027-project-navigation-scale.md) | Navigation at scale — folders, tags, search, thumbnails, bulk ops, project dashboard, virtualized trees | completed (PR #34, MVP + Phase 2: manifest folders/tags, `search_parts` + the `field:value` grammar, content-hash thumbnails that never build, `bulk_part_op` as one undo step, kernel-free dashboard, virtualized folder tree with filter/multi-select/context menu/bulk bar; Phase 3 — sub-assembly nesting, pattern member rows, 1k-instance certification — deferred) ([design](superpowers/specs/2026-08-23-project-navigation-scale-design.md) · [plan](superpowers/plans/2026-08-23-project-navigation-scale.md)) | idea 5 | 026 (soft) |
 | [028](prd/completed/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | completed (PR #27, MVP + Phase 2: 434 cited cards across 30 leaves, schema v2 with per-value basis/source and 80 temperature tables, `find_materials`/`get_material`, FEM resolves E/ν/k at temperature, `agentcad materials lint`, Materials browser; community repo + package distribution + FreeCAD import + 600+ records → `docs/materials.md` Deferred) | idea 2 | — |
 | [029](prd/completed/PRD-029-agent-skills.md) | Agent skills & knowledge packs — loadable, versioned craft (core/org/project layers), bench-measured | completed (PR #33, MVP + the Phase-2 items that live in this repo: `SKILL.md` format + strict frontmatter, core < project layering with visible overrides, `list_skills`/`load_skill` on chat/MCP/HTTP, budgeted chat seam with transcript-rewriting LRU eviction, digest-keyed trust granted only by a human-only route, 16 core skills incl. ten promoted from the cheat-sheet, Skills modal + chat chips, `agentcad skill new\|lint`, `bench run --skills`; deferred by recorded ruling: org layer (PRD-005), mode-aware suggestion (PRD-025), CI-published per-skill bench deltas, marketplace distribution (PRD-031)) | idea 4 | — |
+| [034](prd/pending/PRD-034-feature-timeline-model-code-sync.md) | Feature timeline & model⇄code sync — tiered feature trees from scripts (never guessed), Fusion-style history timeline, three-way selection sync (feature ⇄ script span ⇄ faces), modeless live-preview feature edits emitting script, GUI feature creation in curated style | pending | UX study (Aug 2026) + idea 3 | 026 · 009/010 — 016/025 (soft) |
 
 ### v6 — generative engineering, manufacturing & community
 
@@ -174,8 +204,13 @@ commit. The 031a licensing precondition is closed.
 | [024](prd/completed/PRD-024-agentcad-bench.md) | AgentCAD-Bench — public, kernel-scored agentic-CAD evals; our release gate | completed (PR #26, MVP + FR10–FR12: harness `bench run\|score\|report\|publish\|prompt`, `iou` kernel handler, 25 tasks 5 × 5 all references 1.0, baseline gate, leaderboard renderer, MCP walkthrough; launch results / `fem/` / rotation policy / PRD-018 wiring → Phase 2/3) | analysis | 003 |
 | [030](prd/pending/PRD-030-motion-dynamics.md) | Motion & dynamics — closed-chain kinematics; MuJoCo rigid-body dynamics (reactions, motor sizing); loads→FEM handoff | pending | idea 6 | 013 |
 | [031](prd/pending/PRD-031-marketplace.md) | Marketplace & community hub — validated parametric components/projects/skills; server-side execution only; provenance & disclosure | pending — **split: 031a seeded read-only catalog (step 4) · 031b open publishing (step 6)** | idea 1e | 031a: 011 · 005a · 007 — 031b: + 006 |
+| [031c](prd/pending/PRD-031c-marketplace-community.md) | Marketplace community layer — galleries, comments with publisher/agent badges, honest ratings (never seeded), remix-with-lineage into your own project, collections; the social loop over 031a/b's substrate | pending | UX study (Aug 2026) + idea 1e | 031b · 031a · 007 |
 | [032](prd/pending/PRD-032-universal-cad-import.md) | Universal CAD import — neutral-deep + ODA opt-in + consent-gated cloud conversion; fidelity reports; re-import diffs | pending | idea 7 | 017 |
 | [033](prd/pending/PRD-033-guarded-geometry-occt-stewardship.md) | Guarded geometry & OCCT stewardship — one guarded-op contract behind an enumerated registry (measurement, structured degradation or refusal), a defect corpus with an expectation matrix, differential fuzzing and upstream contribution; owning the OCCT build only on a written trigger | pending | founder idea (Aug 2026), prompted by OCCT#1496 | — |
+| [035](prd/pending/PRD-035-simulation-studio.md) | Simulation studio — persisted studies (fixtures/loads on faces, mesh intent), hash-keyed results with structural staleness, real result displays on the model, study-as-spec-row gating CI, assembly joint margins; flow only via cloud burst | pending | UX study (Aug 2026) | 003 · `[fem]` · 028 — 025/030/019/022 (soft) |
+| [036](prd/pending/PRD-036-production-planning.md) | Production planning & routing — per-part routes (print/CNC/order/provided) over the BOM with basis-labeled costs, leads and hash-honest readiness; one handoff artifact per route (CNC = AP242+PMI+drawing+setup pack, never toolpaths — CAM non-goal stands, founder reconsideration recorded); supplier order lists | pending | UX study (Aug 2026) + idea 1b | 025 · 015 — 021/022/037/011 (soft) |
+| [037](prd/pending/PRD-037-print-studio.md) | Print studio — in-app slicing: plates/placement/profiles in the Bambu grammar, external open slicer engines as confined subprocesses (never linked — AGPL boundary), previews parsed from real engine output, stale jobs gate print/export, printability checks | pending | UX study (Aug 2026) | 017 — 036/022/021/025 (soft) |
+| [038](prd/pending/PRD-038-generative-shape-studies.md) | Generative shape studies — objective + keep-constraints + load case → candidates from parametric shape families (toolkit packs), screened analytically, FEM-verified, applied as reviewable script features with provenance; topology optimization only as a later cloud-burst tier | pending | UX study (Aug 2026) | 019 · 003 · `[fem]` — 010/018/022/035 (soft) |
 
 Sequencing inside phases follows each PRD's dependency header; the phase
 order is the strategy: collaboration core first (the wedge), daily-driver
@@ -215,7 +250,11 @@ Evidence-backed exclusions (each traceable to
   Owning the *build* of OCCT and guarding its answers is PRD-033; writing
   or buying a kernel remains excluded.
 - **In-house CAM/toolpathing** — the handoff is STEP AP242 + PMI +
-  standards drawings + DFM-checked quotes (PRD-021/022).
+  standards drawings + DFM-checked quotes (PRD-021/022). *(Slicing for 3D
+  printing is not CAM-in-house: PRD-037 orchestrates external open
+  engines as subprocesses. A founder request for CNC programs is on
+  record — Aug 25 2026, UX study — but this non-goal stands until an
+  explicit amendment; see PRD-036's non-goals.)*
 - **In-house high-fidelity solvers** (contact/nonlinear FEM, CFD,
   flexible-body/transient dynamics, fatigue) — built-in tiers stay fast
   sanity checks; fidelity bursts to cloud solvers (PRD-022, PRD-030).
