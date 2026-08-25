@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "bench_gfp_001_shim_bracket_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "shim",
+      "label": "Shim Bracket",
+      "material": "al6061",
+      "params": {
+        "length": 60.0,
+        "width": 24.0,
+        "thickness": 4.0,
+        "corner_r": 3.0,
+        "bore_d": 8.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

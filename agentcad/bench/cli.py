@@ -334,6 +334,7 @@ def _cmd_run(args) -> int:
     from ..core.model import AppError
     from ..core.tools import build_registry
     from . import HARNESS_VERSION
+    from . import generation
     from . import runner as bench_runner
     from ._json import write_json
     from .scoring import Scorer, refuse_scoring_overlap
@@ -391,7 +392,25 @@ def _cmd_run(args) -> int:
         # "the library the product ships".
         skills = bench_runner.skills_block(getattr(args, "skills", None))
         started = bench_runner._now()
+        # A `generate_from_prompt` task is produced by the PRD-018 loop, not the
+        # single-turn runner (design §10), so its factories are refused up front
+        # too — but only when the selection actually contains one, so a plain
+        # `bench run` over the v1 set never needs the loop's key.
+        from .tasks import GENERATION_CATEGORY
+        if any(task.category == GENERATION_CATEGORY for task in selected):
+            generation.require_generation_agents(api_key)
+        loop_factory = generation.loop_client_factory(api_key)
+        oneshot_factory = generation.oneshot_client_factory()
         for task in selected:
+            if task.category == GENERATION_CATEGORY:
+                rows[task.id] = generation.run_one_generation_task(
+                    task, service=service, scorer=scorer, report_dir=report_dir,
+                    work_dir=work_dir, model=model, api_key=api_key,
+                    agent=args.agent, loop_client_factory=loop_factory,
+                    oneshot_client_factory=oneshot_factory,
+                    budget=None, failures=failures, quiet=args.quiet,
+                    skills=skills)
+                continue
             rows[task.id] = _run_one_task(
                 task, service=service, scorer=scorer, report_dir=report_dir,
                 work_dir=work_dir, model=model, api_key=api_key,

@@ -179,6 +179,41 @@ def _over_budget(path: Path, task_id: str, warnings: list) -> bool:
     return bool(doc.get("over_budget"))
 
 
+def _generation(path: Path, task_id: str, warnings: list) -> dict | None:
+    """`generation.json`'s AC8 delta beside a score, or ``None`` when absent.
+
+    A `generate_from_prompt` task writes a `generation.json` (loop vs one-shot)
+    beside its `score.json`; every other category writes none. A *present* one
+    that will not parse is a sentence, not the report's verdict — it holds the
+    loop-vs-one-shot comparison, not the task's own measurement (which is the
+    loop's `score.json`, read the same way as any other).
+    """
+    doc_path = path.parent / "generation.json"
+    if not doc_path.is_file():
+        return None
+    try:
+        doc = read_json(doc_path)
+    except ValidationError as exc:
+        warnings.append(f"{task_id}: generation.json is unreadable "
+                        f"({exc.message}); the loop-vs-one-shot delta is omitted")
+        return None
+    delta = doc.get("delta")
+    if not _finite(doc.get("loop_total")) or not _finite(doc.get("oneshot_total")) \
+            or not _finite(delta):
+        warnings.append(f"{task_id}: generation.json has no finite totals; the "
+                        f"loop-vs-one-shot delta is omitted")
+        return None
+    subscores = {}
+    for name, entry in (doc.get("subscores") or {}).items():
+        if isinstance(entry, dict):
+            subscores[name] = {"loop": entry.get("loop"),
+                               "oneshot": entry.get("oneshot"),
+                               "delta": entry.get("delta")}
+    return {"loop_total": float(doc["loop_total"]),
+            "oneshot_total": float(doc["oneshot_total"]),
+            "delta": float(delta), "subscores": subscores}
+
+
 def _comparability(task_id: str, score: dict, header: dict) -> list:
     """Sentences naming every way *score* is not comparable with the header.
 
@@ -239,6 +274,7 @@ def aggregate(results_dir, *, tasks_root=None, expected: list | None = None) -> 
 
     warnings: list = []
     tasks: dict = {}
+    generation: dict = {}
     for task_id in ids:
         score = scores.get(task_id)
         if score is None:
@@ -251,12 +287,17 @@ def aggregate(results_dir, *, tasks_root=None, expected: list | None = None) -> 
             if isinstance(entry, dict) and isinstance(entry.get("value"),
                                                       (int, float)):
                 subscores[name] = float(entry["value"])
-        tasks[task_id] = {
+        row = {
             "total": float(score["total"]),
             "over_budget": _over_budget(paths[task_id], task_id, warnings),
             "missing": False,
             "subscores": subscores,
         }
+        gen = _generation(paths[task_id], task_id, warnings)
+        if gen is not None:
+            row["generation"] = gen
+            generation[task_id] = gen
+        tasks[task_id] = row
 
     categories: dict = {}
     for task_id, row in tasks.items():
@@ -293,6 +334,11 @@ def aggregate(results_dir, *, tasks_root=None, expected: list | None = None) -> 
         "tasks": dict(sorted(tasks.items())),
         "warnings": sorted(warnings),
     }
+    # Additive and guarded: a run with no `generate_from_prompt` task writes no
+    # `generation.json`, so the key never appears and every other report is
+    # byte-for-byte unchanged (AC3 for the non-generation suite).
+    if generation:
+        report["generation"] = dict(sorted(generation.items()))
     return round_floats(report)
 
 
@@ -498,6 +544,20 @@ def render_markdown(report: dict) -> str:
                      f"{row.get('n', 0)} | {row.get('missing', 0)} |")
     lines += ["", f"**Total (mean of category means): {_num(report.get('total'))}**",
               ""]
+
+    generation = report.get("generation") or {}
+    if generation:
+        # AC8: the loop-vs-one-shot delta, per task and total. A positive delta
+        # is the multi-turn generation loop beating the single-turn baseline on
+        # the same prompt and rubric.
+        lines += ["## Generation vs one-shot (AC8)", "",
+                  "| Task | Loop | One-shot | Δ |", "|---|---:|---:|---:|"]
+        for task_id, gen in generation.items():
+            lines.append(
+                f"| `{task_id}` | {_num(gen.get('loop_total'))} | "
+                f"{_num(gen.get('oneshot_total'))} | "
+                f"{_signed(gen.get('delta'))} |")
+        lines.append("")
 
     if status:
         facts = []

@@ -40,8 +40,24 @@ METRICS_SCHEMA = 1
 #: a taste one: a task that accepts nine orientations is not measuring a frame.
 MAX_ROTATIONS = 8
 
-CATEGORIES = ("model_from_drawing", "modify_to_spec", "fix_the_broken_part",
-              "assemble_and_clear", "optimize_under_constraints")
+#: The five PRD-024 `bench-v1` categories. Each ships exactly five bundles and
+#: the loader/report treat them like any other; the constant exists so a reader
+#: (and the count-guard test) can name "the original set" apart from
+#: :data:`GENERATION_CATEGORY`, which is a different kind of task entirely.
+V1_CATEGORIES = ("model_from_drawing", "modify_to_spec", "fix_the_broken_part",
+                 "assemble_and_clear", "optimize_under_constraints")
+
+#: PRD-018's category: a part is **generated from a prompt** by the multi-turn
+#: generation loop (`agent/generate.run_generation`), not modelled by the
+#: single-turn bench runner. The bundle format is identical — a prompt, a frozen
+#: rubric SPECS, a reference STEP, metric windows — and the six subscores are
+#: measured against the rubric exactly as for every other category; only the way
+#: the candidate is *produced* differs (loop vs one-shot), which is what AC8's
+#: loop-vs-one-shot delta measures. Kept apart from the `bench-v1` set because it
+#: rides its own task_set and grows independently of the 25-task self-test.
+GENERATION_CATEGORY = "generate_from_prompt"
+
+CATEGORIES = V1_CATEGORIES + (GENERATION_CATEGORY,)
 
 #: The six subscores, in report order. `weights` has exactly these keys.
 SUBSCORES = ("built", "valid", "specs", "geometry", "interference", "metrics")

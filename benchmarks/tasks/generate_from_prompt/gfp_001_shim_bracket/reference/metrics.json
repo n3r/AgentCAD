@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 60.05,
+      "metric": "bbox_x_mm",
+      "min": 59.95,
+      "name": "shim_bbox_x",
+      "part": "shim"
+    },
+    {
+      "max": 24.05,
+      "metric": "bbox_y_mm",
+      "min": 23.95,
+      "name": "shim_bbox_y",
+      "part": "shim"
+    },
+    {
+      "max": 4.05,
+      "metric": "bbox_z_mm",
+      "min": 3.95,
+      "name": "shim_bbox_z",
+      "part": "shim"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "shim_solids",
+      "part": "shim"
+    },
+    {
+      "max": 5583.31576,
+      "metric": "volume_mm3",
+      "min": 5472.755051,
+      "name": "shim_volume",
+      "part": "shim"
+    }
+  ]
+}
