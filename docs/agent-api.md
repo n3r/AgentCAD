@@ -857,6 +857,121 @@ serves the geometry it was persisted with; a generation that has been collected
 (or discarded) is a 404. Read the URLs off the packet rather than composing
 them.
 
+### Generation (PRD-018)
+
+Task-to-part generation: a **separate, budgeted loop** (`agent/generate.py`)
+that iterates create→render→measure→run_specs on its own scratch part until it
+is kernel-valid **and** its design specs are green, a budget runs out, or the
+candidate is abandoned — never a chat turn, and never something a chat prompt
+can trigger. Registered **only when `ANTHROPIC_API_KEY` is set at server
+startup** (the FEM/`whoami` gate: setting the key later does not register the
+tools without a restart); `GET /api/tools` is the live check.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `generate_part` | **project, prompt**, images, files, candidates, budget | Normalizes `prompt` into an intent record (grounding any named standard — e.g. a NEMA frame — from the shipped `tables/*.json`, never the model), freezes its draft specs, then runs N `candidates` (default 1) of the loop, each authoring ONE part on its own scratch id. Runs **synchronously** — the call does not return until every candidate has reached a terminal state, which can be minutes; watch `generation_progress`/`generation_done` (below) to render progress meanwhile. `images`/`files` are filenames **already uploaded** via `POST /projects/{proj}/imports` — png/jpg reach the model as vision, a `.pdf` is rasterized page-by-page and its text extracted (both behind the `[pdf]` extra; absent it, a `.pdf` is a `validation_error` naming the extra). Returns `{generation_id, project, budget, best, candidates: [{candidate, scratch_id, script, params, metrics, spec_report, render_path, iteration_log, terminal_state: "spec_green"\|"budget_exhausted"\|"abandoned", spec_green, failing_checks, error}], intent, draft_specs}`. `best` is the index of the strongest candidate (a `spec_green` one wins outright; otherwise the highest `(kernel_valid, spec_pass_count, -spec_fails, -metric_distance)`), or `null` with zero candidates. Every candidate is left as a **scratch part** (`gen_<id>_<n>` — hidden from `get_project`'s part list and `list_projects`' `n_parts`) until you `accept_candidate` one; nothing here writes a real part. |
+| `accept_candidate` | **project, generation_id, candidate**, part_id, propose | Reads the candidate's scratch script + params, recreates them at `part_id` (default a generated `gp_<genid>_<n>` id), stamps FR11 provenance (below), and `delete_part`s **every** scratch part of the generation (siblings included — a generation is accepted or discarded as a whole). **Refuses** (`validation_error`, `details.frozen_violations`) a candidate that weakened or deleted a frozen intent-spec — see below. Lands directly on your current branch, or — with history available, proposals wired, and a hosted deployment (or `propose: true` forced) — on a fresh `gen/<id>` branch behind a `proposal_create` (Decision 9; see [Change proposals](#change-proposals)). Returns `{part_id, generation_id, candidate, direct, proposal?, branch?, removed_scratch, generated}`. |
+| `list_generations` | **project** | `{project, generations: [{generation_id, created, prompt_sha256, model, budget, best, intent, draft_specs, candidates: [{candidate, scratch_id, terminal_state, spec_green, failing_checks, metrics, params, render_path, error}]}]}` — the persisted record, **not** the full script/spec-report (those live on the scratch part until accept/cleanup). A top-level manifest loose key (`generations`), so it survives `project_restore` for free like `pmi`/`bom`. |
+| `generation_status` | **project, generation_id** | `{project, generation_id, background: false, state: "complete", best, candidates, created, intent}`. `generate_part` runs to completion before it returns, so a status read is always of a **finished** run — `background`/`state` are the PRD-020 async-job shape, always `false`/`"complete"` today; this tool exists so a future background mode changes no field name, only the values. |
+
+**The intent record and frozen specs (FR2/FR8).** Before any model call,
+`agent/intent.py` deterministically (no model) parses `prompt` for an
+envelope, interfaces, material, quantity and constraints, and grounds any
+named standard against a shipped table (`SkillLibrary.load(pack,
+asset="tables/<name>.json")` → `json.loads`; today `nema.json`, whose rows
+also carry the ISO 273 clearance) — a matched row's numbers are copied
+**verbatim**, cited as `{pack, table, row}`, and an unmatched standard (a
+NEMA frame the table does not carry) grounds nothing rather than inventing a
+number. The structured constraints become a **draft `SPECS`** block built
+from the real `agentcad.toolkit.specs` constructors (`check_bbox`,
+`check_mass`, `check_wall`, `check_clearance`, `check_that`) and that draft is
+**frozen** at `generate_part` time. **The freeze is diffed at
+`accept_candidate`, not inside the loop's own terminate check**: the loop
+lets the model iterate freely (a run can reach `spec_green` with a script that
+already weakened a frozen bound, if the weakened version still passes
+whatever `SPECS` the script currently declares), and it is only the accept
+call that reads the candidate's *declared* `SPECS` off its scratch part and
+diffs them against the frozen set (`agent.intent.frozen_spec_violation`) —
+counting only the frozen rows, where a deleted one is a violation and a
+strengthened or added one is fine. Read `generate_part`'s `draft_specs` in the
+result to see exactly what will be enforced at accept.
+
+**Events**, on the shared bus: `generation_progress {project, generation_id,
+candidate, iteration, phase}` (`phase` one of `iterate`, `render`, `measured`,
+`done`) and `generation_done {project, generation_id, best, candidates:
+[{candidate, terminal_state, spec_green}]}`. The loop's own tool calls
+additionally stream as ordinary `chat_tool_call`/`chat_tool_result` (the
+[chat](#turn-locking-and-chat-sessions) shape), tagged with `generation_id`,
+`candidate` and `auto` (`true` for the loop's own automatic
+render/measure/specs dispatch, `false` for a model-issued call) — a client can
+reuse the chat dock's transcript rendering filtered by `generation_id`.
+
+**Errors.** `generate_part`/`accept_candidate`/`list_generations`/
+`generation_status` are **absent from `GET /api/tools`** entirely when no key
+was configured at startup — there is no tool to 404 on. `POST
+/projects/{proj}/generate` (the one dedicated route; everything else rides
+`POST /api/tools/{name}`) answers the same case with an honest
+`generation_unavailable` **422** (`agentcad.core.model.ValidationError`,
+mirroring `ChatUnavailable`'s message + a `details.fix` hint) rather than a
+bare tool-not-found 404. Malformed input (an empty prompt, an unreadable
+budget field, a `.pdf` upload with no `[pdf]` extra installed, an unknown
+part id at accept) is an ordinary `validation_error`. **Budget exhaustion and
+an abandoned candidate are never errors** — they are RESULT states
+(`terminal_state: "budget_exhausted"` / `"abandoned"`) inside a normal 200/
+tool-success response, carrying `spec_green: false` and, for
+`budget_exhausted`, the best-so-far script/metrics/`failing_checks` it found;
+`abandoned` (≥3 consecutive kernel-crashing writes, or a wall-clock backstop)
+carries a structured `error` and its sibling candidates are unaffected.
+
+**Provenance.** An accepted part carries a `generated` key on `get_part` —
+`{prompt_sha256, sources, model, iterations, spec_green, created, by}` — a
+manifest loose key (`entry["generated"]`, written and read exactly like
+`entry["pmi"]`/`entry["bom"]`) surfaced by an **unconditional**
+`get_part` wrapper (`install_generated_provenance`, the
+`install_rebuild_specs` pattern), installed independently of the API-key
+gate so a part generated while the key was set still shows its provenance
+after the key is removed. Never the prompt text itself — `prompt_sha256`
+lets you verify a prompt you already have without storing it, and `sources`
+names attached files (kind + name/digest, never bytes). `by` is the identity
+that called `accept_candidate` (captured before the write); the write itself
+runs under the `gen:<id>` client identity, so the git trailer attributes the
+generator while `by` attributes the accepter — two different questions.
+**`iterations` is a coarse count, not a meter**: the persisted generation
+record carries no iteration log, so it reads `1` when the candidate reached
+`spec_green` or has any measured metrics, `0` otherwise — read the live
+`iteration_log` off `generate_part`'s own response (or `list_generations`,
+which also omits it) for the real per-turn detail.
+
+**API-key gating, restricted tools and isolation.** The four tools plus the
+scratch-listing guard register only inside `core/tools_generate.py`'s
+`register()`, gated on `os.environ.get("ANTHROPIC_API_KEY")` **read once at
+startup** — the same self-disabling precedent as the `[fem]` extra and
+`whoami`. The loop itself is handed a **restricted** tool list — `create_part`,
+`update_part_script`, `get_part`, `get_metrics`, `render_view`, `run_specs`,
+`analyze_part`, `part_template`, `load_skill` — never `delete_part`,
+`set_assembly`, `set_params`, a proposal tool, or `generate_part`/
+`accept_candidate` itself (no recursion); every part-scoped call the model
+issues is force-rewritten to `(project, <this candidate's own scratch id>)`
+regardless of what the model put in the arguments, so one candidate cannot
+touch another's part, let alone a real one. The mechanical "look and measure"
+after every script write — `render_view` → `get_metrics` → `run_specs`,
+injected into the next turn — is dispatched **by the loop's own code**, not
+requested of the model, so a model that never calls those tools itself still
+gets measured every iteration.
+
+**Honest limits.** `spec_green` means the kernel accepted the geometry and
+every spec the script currently declares passed — it is **not** a proof the
+part is the right shape. The specs a candidate writes are only as good as the
+constraints the prompt (or the intent normalizer) made machine-checkable; a
+part can be metric-green and still solve the wrong problem, mount to the
+wrong face, or read a dimension off the wrong table if the standard was not
+grounded. That is the whole reason candidates are plural and a human picks:
+review the render and the metrics of the accepted candidate before trusting
+it, the same way you would review any other agent-authored script. A
+`budget_exhausted` result is not a failure to hide — it is the loop being
+honest that it ran out of time/iterations before converging, with the
+best-so-far evidence attached rather than a fabricated green.
+
 ### Geometry CI
 
 One call certifies a whole project: rebuild every part, re-resolve the
