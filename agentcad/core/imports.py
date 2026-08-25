@@ -7,7 +7,18 @@ from pathlib import Path
 
 from .model import ValidationError
 
-SUPPORTED_EXTS = {".step", ".stp", ".brep", ".stl"}
+# CAD geometry formats plus the PRD-018 intake formats (images + PDF). The
+# image/PDF entries only make those files *uploadable* through the same
+# traversal-safe `ingest_file` path — they are consumed by `core/intake.py`
+# (vision), never built as reference parts. `.pdf` is always in the set so a
+# PDF can be uploaded, but `intake.prepare_vision` gates on the optional
+# `[pdf]` extra at USE time (the FEM gating idiom): absent pypdfium2 the upload
+# succeeds and the vision step answers a `[pdf]`-extra validation_error.
+SUPPORTED_EXTS = {
+    ".step", ".stp", ".brep", ".stl",  # CAD geometry
+    ".png", ".jpg", ".jpeg",           # PRD-018 vision intake (images)
+    ".pdf",                            # PRD-018 vision intake (extra-gated use)
+}
 MAX_IMPORT_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
