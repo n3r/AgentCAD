@@ -5,7 +5,7 @@
 - **Created:** 2026-08-09
 - **Origin:** founder idea #8 (Aug 2026), engineering-reviewed
 - **Depends on:** — (foundational for other UI PRDs)
-- **Related:** PRD-025 (workspace bar rides the shell), PRD-016, PRD-027, PRD-008 (threads UI uses dialog/panel primitives)
+- **Related:** PRD-025 (mode bar rides the shell), PRD-016, PRD-027, PRD-008 (threads UI uses dialog/panel primitives)
 
 ## Problem & motivation
 
@@ -62,7 +62,7 @@ is the human-agent parity story made tangible.
 - Adopting a frontend framework or bundler — the shell stays vanilla ES
   modules (the no-build constraint is a project value; risk addressed
   below).
-- Workspace tabs themselves (PRD-025), tree redesign (PRD-027), direct-
+- Mode tabs themselves (PRD-025), tree redesign (PRD-027), direct-
   modeling surfaces (PRD-016) — they *consume* these primitives.
 - Full user-defined layout persistence/sharing (later phase).
 - Native OS menu bars in the packaged app (browser-consistent UI only).
@@ -227,7 +227,7 @@ non-goal from the design spec (§0, "Defer"): they **adopt** the shell
 `dialogs.attachLegacy`) rather than being rewritten onto the `dialogs.open`
 markup primitive. Their DOM and open/close functions are unchanged. This was
 an explicit call, not a shortfall: a full rewrite is churn with no
-user-visible gain and would collide with PRD-025's workspace work.
+user-visible gain and would collide with PRD-025's mode work.
 
 ## Acceptance criteria
 
@@ -277,7 +277,7 @@ Python-only, no WebSocket required.
 - **Palette arg-forms** for complex tools (nested objects like
   `set_assembly`) — MVP explicitly scopes to scalar/enum args; complex
   tools open their dedicated dialog instead (registry flag).
-- **Menu taxonomy** needs a design pass with PRD-025 (workspace-scoped
+- **Menu taxonomy** needs a design pass with PRD-025 (mode-scoped
   menus vs global) — resolve in the design spec.
 - **`ui_open` abuse** (agent yanking surfaces around): rate-limit + always
   visible attribution ("opened by agent"), consistent with PRD-025's

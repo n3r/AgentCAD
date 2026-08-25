@@ -5,7 +5,7 @@
 - **Created:** 2026-08-18
 - **Origin:** carved out of [PRD-031](../pending/PRD-031-marketplace.md) by the founder decision recorded in [roadmap.md](../../roadmap.md), "Sequencing decision — the marketplace chain (16 Aug 2026)": *"Public read-only catalog we seed, with add-to-library. Needs 011 + 005a + 007. The browse payload is already pre-generated: 005a serves `catalog/index.json`'s metadata and shipped previews anonymously, filtered to indexes whose `scope` is `public`; add-to-library is the existing authenticated `add_package`/`use_part` path."*
 - **Depends on:** PRD-011 (completed — the content-addressed package format, the nine-package COTS catalog, `search_packages`/`add_package`/`use_part`) · PRD-005a (completed — the anonymous surface, `routes_public.py`, the dual `scope: public` filter, the `EXPECTED_PUBLIC` equality test) · PRD-007 (completed — the customizer containment). **NOT PRD-006:** 031a serves only our own seeded catalog, so it stays inside the "bounded params on a member-authored script" threat 005a/007 already accepted. PRD-006 is 031b's.
-- **Related:** PRD-031 (the deferred remainder — open publishing, economy) · PRD-025 (the Library/Market workspace, later) · PRD-029 (skills as a second content type, 031b)
+- **Related:** PRD-031 (the deferred remainder — open publishing, economy) · PRD-025 (the Library/Market mode, later) · PRD-029 (skills as a second content type, 031b)
 - **Design:** [2026-08-18-marketplace-catalog-design.md](../../superpowers/specs/2026-08-18-marketplace-catalog-design.md) · **Plan:** [2026-08-18-marketplace-catalog.md](../../superpowers/plans/2026-08-18-marketplace-catalog.md)
 
 > **Carve-out note.** This is PRD-031's *first* slice, not a replacement. PRD-031
@@ -42,7 +42,7 @@ The shelf is never empty on day one: it is the nine-package COTS catalog. The su
 - **Open publishing, the Publish wizard, the AST gate, policy/malware/name-squat scan, signing** — PRD-031/031b (need PRD-006: third-party code on our servers).
 - **Sandbox-confined execution of uploaded code** — PRD-006.
 - **Remix/ancestry, verified-publisher tiers, moderation/takedown, the economy (paid, payouts), skills listings** — PRD-031/031b.
-- **The Library/Market workspace IA** — PRD-025. 031a ships the pages, not the workspace.
+- **The Library/Market mode IA** — PRD-025. 031a ships the pages, not the mode.
 - **A separate cloud publish pipeline / storage** — 031a serves the bundled `catalog/` index via completed PRD-005a public read.
 
 ## Experience

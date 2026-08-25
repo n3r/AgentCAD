@@ -5,7 +5,7 @@
 - **Created:** 2026-08-09
 - **Origin:** founder idea #4 (Aug 2026), engineering-reviewed
 - **Depends on:** — (extends the chat/MCP context machinery)
-- **Related:** PRD-018 (generation quality lever), PRD-025 (workspace-scoped loading), PRD-031 (community skill distribution), PRD-024 (skills measured by the bench)
+- **Related:** PRD-018 (generation quality lever), PRD-025 (mode-scoped loading), PRD-031 (community skill distribution), PRD-024 (skills measured by the bench)
 
 ## Problem & motivation
 
@@ -25,7 +25,7 @@ ships domain modeling knowledge as a first-class, versioned, loadable
 artifact (market_research.md, "AI-native CAD": Zookeeper leans on doc
 retrieval; incumbent copilots are help-chat over manuals). Skills also
 compound three other bets: generation (PRD-018) gets domain playbooks,
-workspaces (PRD-025) get phase-appropriate context, and the marketplace
+modes (PRD-025) get phase-appropriate context, and the marketplace
 (PRD-031) gets a second content type the community can contribute — with
 quality measurable by the bench (PRD-024).
 
@@ -61,7 +61,7 @@ quality measurable by the bench (PRD-024).
 - G4. Project- and org-level skills: a `skills/` directory in a project
   (and org store in cloud mode) that agents load with the same mechanics
   — "how we do it here."
-- G5. Scoped auto-suggestion: workspace (PRD-025), selection, and task
+- G5. Scoped auto-suggestion: mode (PRD-025), selection, and task
   phrasing inform which skills are offered/loaded; the agent (or user)
   confirms; MCP clients get the same discovery via tools.
 - G6. Measurable value: bench tasks (PRD-024) run with and without
@@ -119,7 +119,7 @@ publishing to the marketplace rides PRD-031 (signed, versioned, reviewed).
   (config); the agent must unload (or the runtime evicts LRU) beyond
   budget — deterministic, logged.
 - FR5. The chat engine's system context includes the compact index and
-  the workspace envelope (PRD-025) so suggestion is context-aware;
+  the mode envelope (PRD-025) so suggestion is context-aware;
   `requires` gates listing to capabilities actually present (FEM-needing
   skills hidden without the extra — the house capability rule).
 - FR6. Core library at launch: ≥12 skills covering G3's list; each

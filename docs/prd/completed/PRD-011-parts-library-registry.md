@@ -5,7 +5,7 @@
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026) + founder idea #1d ("Library" tab, Aug 2026)
 - **Depends on:** PRD-003 (hard — the publish gate runs specs) · PRD-005 (soft — hosted cloud index)
-- **Related:** PRD-010 (holes pair with fasteners), PRD-012 (package presets align with configurations), PRD-013 (sub-assembly packages later), PRD-025 (the Library workspace surfaces this), PRD-031 (the public marketplace layer above)
+- **Related:** PRD-010 (holes pair with fasteners), PRD-012 (package presets align with configurations), PRD-013 (sub-assembly packages later), PRD-025 (the Library mode surfaces this), PRD-031 (the public marketplace layer above)
 
 ## Problem & motivation
 

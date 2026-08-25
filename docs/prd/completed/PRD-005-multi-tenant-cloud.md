@@ -340,7 +340,7 @@ acting principal.
 - **Identity store shape** (one SQLite per instance vs per-org files):
   audit volume and membership queries favor SQLite; keep projects as files
   either way. Decide in design with a migration note.
-- **Term collision:** tenancy "workspaces" vs PRD-025's UI workspace tabs
+- **Term collision (resolved at close-out):** tenancy "workspaces" vs PRD-025's UI tabs — PRD-025's tabs are renamed **modes**; tenancy keeps "workspace" and the shell's internal layout key is unchanged. The original open note:
   (Build/Produce/Test/Library/Market). Settle naming before either surface
   ships — one of the two must rename.
 - **Compose TLS:** bundled ACME vs bring-your-own-proxy; default to bundled

@@ -5,7 +5,7 @@
 - **Created:** 2026-08-09
 - **Origin:** founder idea #5 (Aug 2026), engineering-reviewed
 - **Depends on:** PRD-026 (shell primitives — soft but strongly preferred)
-- **Related:** PRD-013 (sub-assemblies appear in the tree), PRD-025 (Library/workspaces), PRD-012 (config identity in rows)
+- **Related:** PRD-013 (sub-assemblies appear in the tree), PRD-025 (Library/modes), PRD-012 (config identity in rows)
 
 ## Problem & motivation
 

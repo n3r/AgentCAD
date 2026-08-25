@@ -5,7 +5,7 @@
 - **Created:** 2026-08-09
 - **Origin:** founder idea #6 (Aug 2026), engineering-reviewed; grounded by dedicated research (market_research.md, "Physics & motion"). Promotes the former "full kinematic solver" non-goal into a staged plan.
 - **Depends on:** PRD-013 (richer joints + URDF — hard) · PRD-003 (dynamic results as spec checks — soft) · PRD-020 (long runs as jobs — soft)
-- **Related:** PRD-019 (studies over mechanism params), PRD-022 (sim burst for what we don't build), PRD-025 (Test workspace hosts it)
+- **Related:** PRD-019 (studies over mechanism params), PRD-022 (sim burst for what we don't build), PRD-025 (Test mode hosts it)
 
 ## Problem & motivation
 
@@ -58,7 +58,7 @@ is the credible second tier; Bullet is fading; PhysX/Rapier mismatch.
   inertial state) into linear-static FEM load cases (with inertia relief)
   — the Motion→Simulation workflow, one tool call.
 - G4. Results as evidence: motion runs are persisted artifacts (setup +
-  curves + verdicts) surfaced in the Test workspace (PRD-025), citable in
+  curves + verdicts) surfaced in the Test mode (PRD-025), citable in
   specs (PRD-003) and proposals (PRD-002).
 - G5. Honest fidelity labeling: sweep (exact B-rep, quasi-static) vs
   dynamics (convex proxies, rigid bodies) — every result names its tier
