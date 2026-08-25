@@ -2674,6 +2674,8 @@ ADOPTED_MODALS = {
     # new `.modal-overlay` declare itself rather than silently sitting off the
     # dialog stack.
     "skills": "skills.js",
+    # PRD-018: the task-to-part Generate panel + candidate gallery.
+    "generate": "generate.js",
 }
 
 # `<div id="…" class="modal-overlay …">` — the ten-overlay sweep the reviewer

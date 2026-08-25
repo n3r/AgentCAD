@@ -86,6 +86,11 @@
 
     <button id="skills-btn" class="tb-btn" title="Agent skills — loadable craft guides">Skills</button>
 
+    <!-- PRD-018 slice 6: generate a part from a prompt (+ optional photos/PDF).
+         Reachable the same three ways as Skills/Materials — toolbar, Model
+         menu (agent.generate), palette — and by `ui_open {view: "generate"}`. -->
+    <button id="generate-btn" class="tb-btn" title="Generate a part from a task description">✦ Generate</button>
+
     <button id="import-btn" class="tb-btn" title="Import a CAD file (.step / .stp / .brep / .stl)">Import</button>
     <input id="import-input" type="file" accept=".step,.stp,.brep,.stl" hidden>
 
@@ -599,6 +604,57 @@
         <section id="skills-detail" class="skills-detail" aria-label="Skill preview"></section>
       </div>
       <footer id="skills-hint" class="skills-hint"></footer>
+    </div>
+  </div>
+
+  <!-- PRD-018 slice 6: task-to-part generation. Prompt + attachment well ->
+       `generate_part` (a LONG synchronous call — progress rides
+       `generation_progress`/`generation_done` and the `chat_tool_call`/
+       `chat_tool_result` events tagged with `generation_id`, reusing the chat
+       dock's `.tool-chip` shape) -> a candidate gallery (iso render, mass,
+       bbox, PARAMS, spec chips, Accept). Same `.modal-overlay` chrome as
+       Skills/Materials, adopted onto the dialog stack by `generate.js`. -->
+  <div id="generate-modal" class="modal-overlay hidden">
+    <div class="modal wide" role="dialog" aria-modal="true" aria-label="Generate a part">
+      <header class="modal-head">
+        <span id="generate-title" class="modal-title">Generate a part</span>
+        <div class="modal-actions">
+          <button id="generate-new" class="tb-btn hidden" type="button">New generation…</button>
+          <button id="generate-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="generate-body" class="gen-body">
+        <form id="generate-form" class="gen-form">
+          <label class="gen-label" for="generate-prompt">Describe the part</label>
+          <textarea id="generate-prompt" class="gen-prompt" rows="4" required
+                    placeholder="e.g. A NEMA 17 motor mount bracket, 3mm aluminium, four M3 clearance holes on the motor face, overall footprint under 60x60mm"></textarea>
+          <div id="generate-attachments" class="gen-attachments"></div>
+          <div class="gen-attach-row">
+            <button id="generate-attach-btn" class="tb-btn" type="button">Add photo / PDF…</button>
+            <input id="generate-attach-input" type="file" accept=".png,.jpg,.jpeg,.pdf" multiple hidden>
+            <span class="gen-attach-hint">a sketch photo, or a PDF datasheet/drawing</span>
+          </div>
+          <div class="gen-opts">
+            <label class="gen-opt">Candidates
+              <input id="generate-candidates" type="number" min="1" max="4" step="1" value="1">
+            </label>
+            <label class="gen-opt">Max iterations
+              <input id="generate-max-iter" type="number" min="1" max="20" step="1" placeholder="default">
+            </label>
+            <label class="gen-opt">Wall-clock budget (s)
+              <input id="generate-wallclock" type="number" min="10" step="10" placeholder="default">
+            </label>
+          </div>
+          <div id="generate-error" class="gen-error hidden"></div>
+          <div class="gen-submit-row">
+            <button id="generate-submit" class="tb-btn primary" type="submit">Generate</button>
+          </div>
+        </form>
+
+        <div id="generate-intent" class="gen-intent hidden"></div>
+        <div id="generate-progress" class="gen-progress hidden"></div>
+        <div id="generate-gallery" class="gen-gallery hidden"></div>
+      </div>
     </div>
   </div>
 

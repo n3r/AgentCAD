@@ -24,6 +24,7 @@ import * as configs from "./configs.js";
 import * as market from "./market.js";
 import * as materials from "./materials.js";
 import * as skills from "./skills.js";
+import * as generate from "./generate.js";
 import * as auth from "./auth.js";
 import * as workspace from "./workspace.js";
 import * as cloud from "./cloud.js";
@@ -1457,10 +1458,22 @@ function handleEvent(ev) {
       return;
     }
     case "chat_delta":
-    case "chat_tool_call":
-    case "chat_tool_result":
     case "chat_done":
       chat.handleEvent(ev);
+      return;
+    case "chat_tool_call":
+    case "chat_tool_result":
+      chat.handleEvent(ev);
+      // PRD-018: the generation loop's own tool calls stream as these SAME
+      // events, tagged with `generation_id` — the chat dock renders them
+      // (scoped by its own `session` filter into a one-line notice, never the
+      // transcript) and the Generate panel renders them into its live
+      // progress lanes when it started this run.
+      if (ev.generation_id) generate.handleEvent(ev);
+      return;
+    case "generation_progress":
+    case "generation_done":
+      generate.handleEvent(ev);
       return;
     // PRD-029. Both go to the dock's chip renderer, which filters on `client`
     // (only the chat engine's own ids draw a chip — the Skills modal's preview
@@ -3156,6 +3169,14 @@ function registerActions() {
   A({ id: "agent.skills", title: "Skills…", group: "Agent",
       keywords: ["skills", "knowledge", "guides", "playbook"],
       run: () => skills.open() });
+  // PRD-018. `generate_part` is the agent path too (an MCP client can call it
+  // directly, or an MCP client can *be* the loop) — this row is the human
+  // path onto the same tool, hence "Agent" and not "Model": the verb is
+  // asking the built-in agent to author a part, not editing one.
+  A({ id: "agent.generate", title: "Generate a part…", group: "Agent",
+      when: hasProject,
+      keywords: ["generate", "prompt", "ai", "task-to-part", "candidates"],
+      run: () => generate.open() });
 
   // ------------------------------------------------------------------ Help
   // help/10 is the command palette (`shell/palette.js`) — the row people reach
@@ -3389,6 +3410,7 @@ async function boot() {
   materials.init(panelApi);
   skills.init(panelApi);
   presence.init();
+  generate.init(panelApi);
   // PRD-005 slice 8: no-ops in local mode and on an untenanted hosted
   // instance (`identity.orgs` empty) — the switcher renders nothing and the
   // two panels' menu/palette rows never appear eligible (`hasOrgs` below).
@@ -3421,6 +3443,9 @@ async function boot() {
   // are one verb, routed through the registry.
   document.getElementById("skills-btn")?.addEventListener("click",
     () => actions.run("agent.skills", null, { source: "toolbar" }));
+  // PRD-018 slice 6: the Generate panel, same three-way shape.
+  document.getElementById("generate-btn")?.addEventListener("click",
+    () => actions.run("agent.generate", null, { source: "toolbar" }));
   setupUndo();
   setupGizmoSnapKeys();
   setupRepMode();

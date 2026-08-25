@@ -16,6 +16,9 @@ filenames are then passed to ``generate_part`` as ``images``/``files``.
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
+
 from fastapi import APIRouter, Request
 
 from ..core.tools_generate import GenerationUnavailable
@@ -37,6 +40,14 @@ def build_router(service, registry) -> APIRouter:
         args["project"] = proj
         # registry.call is report-honest: a tool refusal comes back as a 200
         # with an {"error": ...} payload, exactly like POST /api/tools/{name}.
-        return registry.call("generate_part", args)
+        # The loop runs for minutes, so offload it to a worker thread — the
+        # event loop stays free to drain the /ws queue, so generation_progress
+        # events trickle to the browser live instead of bursting at the end.
+        # run_in_executor drops contextvars, so copy the request context in
+        # (the tenant must reach the tool, or a hosted generation writes to the
+        # wrong root — the PRD-005 lesson).
+        ctx = contextvars.copy_context()
+        return await asyncio.get_running_loop().run_in_executor(
+            None, lambda: ctx.run(registry.call, "generate_part", args))
 
     return router

@@ -476,12 +476,16 @@ function buildParamControls(part) {
   paramChoices = {};
   const spec = part.params_spec;
   if (!spec || !Object.keys(spec).length) {
+    // `.innerHTML =` here would wipe a badge appended before it, so the badge
+    // goes AFTER — both branches append it, never assign over it.
     paramsPane.innerHTML =
       '<div class="pane-note">This part exposes no parameters. Define a PARAMS dict in the script.</div>';
+    appendGeneratedBadge(part);
     appendWarningsHost();
     appendSpecsHost();
     return;
   }
+  appendGeneratedBadge(part);
   for (const [name, entry] of Object.entries(spec)) {
     const wrap = document.createElement("div");
     wrap.className = "param";
@@ -651,6 +655,45 @@ function appendSpecsHost() {
   s.className = "spec-block";
   s.id = "part-specs";
   paramsPane.appendChild(s);
+}
+
+// PRD-018 FR11: a part accepted from the generation loop carries a `generated`
+// loose key on `get_part` (`install_generated_provenance`) — surfaced here as
+// a small badge so an accepted candidate is indistinguishable from a
+// hand-written part EXCEPT for this. Absent (and this appends nothing) for
+// every ordinary part, so the pane looks exactly as it did before the
+// feature for the overwhelming majority of parts.
+function appendGeneratedBadge(part) {
+  const gen = part && part.generated;
+  if (!gen || typeof gen !== "object") return;
+  const block = document.createElement("div");
+  block.className = "gen-badge-block";
+
+  const head = document.createElement("div");
+  head.className = "gen-badge-head";
+  const badge = document.createElement("span");
+  badge.className = "ref-badge";
+  badge.textContent = "generated";
+  head.appendChild(badge);
+  const honesty = document.createElement("span");
+  honesty.className = "ref-kind";
+  honesty.textContent = gen.spec_green
+    ? "spec green"
+    : `budget exhausted — ${gen.iterations || 0} iteration${gen.iterations === 1 ? "" : "s"}, not fully green`;
+  head.appendChild(honesty);
+  block.appendChild(head);
+
+  const meta = document.createElement("div");
+  meta.className = "gen-badge-meta";
+  const bits = [];
+  if (gen.model) bits.push(`model: ${gen.model}`);
+  if (gen.iterations != null) bits.push(`iterations: ${gen.iterations}`);
+  if (gen.created) bits.push(`created: ${gen.created}`);
+  if (gen.by) bits.push(`by: ${gen.by}`);
+  meta.textContent = bits.join(" · ");
+  block.appendChild(meta);
+
+  paramsPane.appendChild(block);
 }
 
 // Reference (imported) parts have no editable parameters; show provenance in

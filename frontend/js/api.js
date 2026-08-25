@@ -616,6 +616,31 @@ export const api = {
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 
+  // ---- task-to-part generation (PRD-018) ----
+  // `generate_part` is a LONG synchronous call: the browser awaits this while
+  // `generation_progress`/`generation_done` and `chat_tool_call`/
+  // `chat_tool_result` (tagged `generation_id`) stream over the WebSocket, so
+  // `generate.js` can render the loop converging before this promise settles.
+  // A dedicated route, not the generic tool passthrough: when no
+  // ANTHROPIC_API_KEY is configured the pack never registers `generate_part`
+  // at all, and `POST /api/tools/generate_part` would be an opaque 404 — this
+  // route answers the SAME `generation_unavailable` 422 (message + fix hint)
+  // ChatUnavailable gives the chat dock, so the panel can say why.
+  generatePart: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/generate`, body || {}),
+  /** Accept one candidate as a real part: rename-via-recreate + FR11
+   *  provenance + scratch cleanup, landing directly or (hosted, with
+   *  proposals) via a `gen/<id>` branch proposal. No dedicated route (only
+   *  `generate_part` needed the honest 422), so this rides the generic tool
+   *  passthrough — a refusal (frozen-spec violation, already-accepted
+   *  candidate) is the tool convention: a 200 with `{error}`. */
+  acceptCandidate: (proj, generationId, candidate, opts) =>
+    request("POST", "/api/tools/accept_candidate", {
+      project: proj, generation_id: generationId, candidate, ...(opts || {}),
+    }),
+  listGenerations: (proj) =>
+    request("POST", "/api/tools/list_generations", { project: proj }),
+
   // ---- the workbench shell (PRD-026) ----
   /** The LIVE tool registry — the command palette's only source of tools, so
    *  a pack that registers late simply appears and nothing frontend-side ever
