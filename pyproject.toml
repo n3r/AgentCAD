@@ -54,6 +54,17 @@ fem = [
 usd = [
     "usd-core>=26.8; platform_machine != 'aarch64' or sys_platform != 'linux'",
 ]
+# PDF intake (PRD-018 FR1). Gated exactly like `[fem]`: `core/intake.py` lazy-
+# imports pypdfium2 and `pdf_available()` (a `find_spec` probe) fronts every use,
+# so a plain install never carries the ~8 MB bundled pdfium binary and a PDF
+# upload answers a `[pdf]`-extra validation_error rather than crashing. pypdfium2
+# is BSD-3/Apache-2.0, pure-wheels on every deployment platform, and adds no
+# Python dependency (rasterization reuses `core/render.py::encode_png`, no
+# Pillow). See `docs/superpowers/specs/2026-08-25-task-to-part-generation-spike.md`
+# area C for the license/platform/no-Pillow evidence.
+pdf = [
+    "pypdfium2>=4",
+]
 
 [project.scripts]
 agentcad = "agentcad.cli:main"

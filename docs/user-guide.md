@@ -666,6 +666,75 @@ else. For a scaffold and a checker:
 .venv/bin/agentcad skill lint ~/AgentCAD/projects/myproj/skills
 ```
 
+### Generate
+
+**Agent → Generate…** (needs `ANTHROPIC_API_KEY`, same as chat) opens a
+different kind of agent entirely: instead of a conversation, you describe a
+**part** and the system iterates — write, build, look, measure, check specs,
+write again — on its own until the part is a valid solid that passes its
+design specs, a time/iteration budget runs out, or it gives up. You watch it
+converge; you do not drive it turn by turn.
+
+**Describe the part.** Type what you want — dimensions, an interface ("mounts
+a NEMA 17 motor"), a material, a mass budget — and attach a reference image
+or a PDF datasheet if you have one (a photo of the space it has to fit,
+a manufacturer's drawing). A named standard the system recognizes (a NEMA
+frame today) is grounded from AgentCAD's own shipped data, never guessed —
+the bolt circle and shaft clearance you get back are the real NEMA numbers,
+cited, not the model's memory of them. You can ask for more than one
+**candidate** (up to 4) so you have a choice at the end rather than one shot.
+
+**Watch it converge.** While it runs you see a live lane per candidate: the
+part's script being written, an automatic render after each change (the
+system renders and measures for itself — you never have to ask it to "look"),
+and the metrics/spec results as they land. This can take a couple of minutes;
+the panel stays open and responsive while it works.
+
+**The gallery.** When every candidate reaches a stopping point, you get a
+gallery: one card per candidate with its render, mass, bounding box, its
+typed PARAMS table, and a row of chips — one per design spec, green or red —
+so you can see *which* constraint a candidate missed without reading a spec
+report. A candidate that ran out of budget before converging says so plainly:
+**"budget exhausted — best so far, N checks failing"** — never a fake
+success. Nothing here has touched your project yet; every candidate lives on
+a scratch id you cannot otherwise see or select in the tree until you accept
+one.
+
+**Accept.** Pick the candidate you want and click **Accept** — it becomes a
+real part at whatever id you choose (or a generated one), the losing
+candidates are discarded, and the part's Parameters pane grows a small
+**generated** badge (model, iteration count, when, by whom) so an
+agent-generated part is never mistaken for hand-authored history you forgot
+about — except for that one badge, it behaves exactly like any other script
+part: edit it, branch it, export it, delete it.
+
+**The honesty this feature demands, read before you trust a green.**
+"Spec green" means the kernel accepted the geometry and every design spec
+the script currently declares passed — it is a statement about the
+constraints that got written down, not a certificate that the part is the
+*right* shape. **The loop can pass its own metrics and still miss the
+shape** — review the candidate the way you would review any script an agent
+handed you: look at the render, check the PARAMS make sense, and only then
+trust it. A `budget_exhausted` result is not a failure hidden from you; it is
+the system telling you honestly that it ran out of time before converging,
+with its best attempt on the table for you to judge or discard.
+
+**What "spec green" and "reference data" do and do not protect you from.** A
+generated part is a Python script, and it **is arbitrary Python** — the same
+as a script you or anyone else wrote by hand. Generation does not sandbox it
+any more tightly than any other part in your project; the isolation that
+exists comes from the server's general script-execution confinement, not from
+anything specific to this feature. Attaching a reference image or PDF is safe
+in the ordinary sense (its text is fenced off from the model as data, never
+followed as an instruction), but that fence is a **prompt-level safeguard,
+not a security wall** — treat it the way you'd treat a spam filter, not a
+lock. And the green "spec_green" badge and the **generated** provenance tag
+are not a certificate that the part is safe or correct; they mean the server
+re-measured the geometry against the constraints it could check, nothing
+more. Review an accepted generated part's script the same way you would
+review a script from any other agent before you trust it with anything that
+matters.
+
 ## The v2 capabilities
 
 AgentCAD v2 adds imports, richer materials, assembly mates, 2D drawings, and

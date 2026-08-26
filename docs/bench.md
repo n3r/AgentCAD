@@ -129,9 +129,17 @@ verdict*. An unknown task, an unreadable results directory, a refused
 ## The task bundle
 
 A task lives at `benchmarks/tasks/<category>/<id>/`; the id used everywhere is
-`"<category>/<id>"`. The five categories are `model_from_drawing`,
-`modify_to_spec`, `fix_the_broken_part`, `assemble_and_clear` and
-`optimize_under_constraints`, five tasks each.
+`"<category>/<id>"`. The **bench-v1** task set is five categories,
+`model_from_drawing`, `modify_to_spec`, `fix_the_broken_part`,
+`assemble_and_clear` and `optimize_under_constraints`, five tasks each — every
+one of them driven by bench's own single-turn runner (`bench/runner.py`).
+PRD-018 adds a sixth, `generate_from_prompt` (`bench/tasks.py`'s
+`GENERATION_CATEGORY`), which is a **different kind of task**: its bundle is
+the same shape, but it is driven by the PRD-018 generation loop instead, and
+it is scored alongside a one-shot baseline — see
+[The `generate_from_prompt` category and the loop-vs-one-shot delta (AC8)](#the-generate_from_prompt-category-and-the-loop-vs-one-shot-delta-ac8)
+below. `V1_CATEGORIES` names the original five where a count-guard or a
+"the whole suite" claim needs to say so explicitly; `CATEGORIES` is all six.
 
 ```
 benchmarks/tasks/model_from_drawing/mfd_001_spacer_plate/
@@ -477,6 +485,79 @@ Two properties are what make the subtraction honest:
 
 One task under a stochastic agent is noise. Compare `--set fast` or wider, and
 read the category rows rather than a single task's delta.
+
+---
+
+## The `generate_from_prompt` category and the loop-vs-one-shot delta (AC8)
+
+```bash
+uv run agentcad bench run --tasks 'generate_from_prompt/*' --agent builtin \
+    --report out-gen/
+uv run agentcad bench report out-gen/
+```
+
+Every other category asks "can the agent do this task through the product's
+tools"; `generate_from_prompt` asks the PRD-018-specific question: "does the
+multi-turn **generation loop** (`agent/generate.run_generation` — see
+[`docs/architecture.md`](architecture.md#generation-loop-prd-018)) do better
+than bench's own ordinary single-turn runner on the same prompt?" A task
+bundle in this category (`benchmarks/tasks/generate_from_prompt/`) is the same
+shape as any other — `task.json`, `prompt.md`, a rubric under `specs/`, a
+reference project + STEP — and it is scored by the same `scoring.Scorer`, the
+same six subscores, the same frozen-rubric-`SPECS` injection, the same IoU
+geometry. What is different is **how the submission is produced**:
+
+* the **loop** (`bench/generation.py::run_loop_submission`) drives
+  `run_generation` over the task's prompt with `Budget(max_iterations=
+  task.budgets.turns, wall_clock_s=task.budgets.wall_s)` — the same two
+  numbers `bench run` already enforces on the single-turn runner, so the two
+  halves are bounded by the *same* task declaration and the delta measures the
+  mode, not a budget mismatch — and its **best** candidate's script becomes
+  the scored submission (`score.json`, the canonical measurement for the
+  task);
+* the **one-shot baseline** is bench's existing single-turn `runner.run_task`
+  over the identical prompt (`oneshot_score.json`) — the same agent this
+  repository already benches everywhere else, run once instead of iterated;
+* **`generation.json`** is the pure delta, `loop − one-shot`, per subscore and
+  total — `null` for a subscore unless **both** sides actually measured it
+  (an excluded/`error` side is never subtracted against, the same rule 2 the
+  scorer itself follows), and it carries no clock/host/path, so it is exactly
+  as reproducible as the two `score.json`s it is computed from.
+
+`bench report` reads `generation.json` beside a task's `score.json` when
+present (every other category writes none, so every other report stays
+byte-for-byte unchanged) and renders it as its own table:
+
+```
+## Generation vs one-shot (AC8)
+
+| Task | Loop | One-shot | Δ |
+|---|---:|---:|---:|
+| `generate_from_prompt/gfp_001_shim_bracket` | 0.9800 | 0.7400 | +0.2400 |
+```
+
+A positive Δ is the loop's iterate-until-green discipline outscoring one shot
+at the same prompt on the *same* rubric — this is AC8's "beats one-shot",
+measured, not asserted. The task otherwise folds into `bench report`'s
+ordinary `categories`/`total` exactly like any other row: `generate_from_prompt`
+is one more category mean feeding the overall total, the AC8 table is
+additional context beside it, not a second scoring system.
+
+**Selecting it.** `--tasks 'generate_from_prompt/*'` or `--set generation`
+(the category's own `sets` entry) runs only the generation task(s); it is
+excluded from `DEFAULT_SET`/`--set fast`, so an ordinary `bench run` over the
+v1 categories never needs the loop's own client and never pays its wall-clock
+cost. `bench run` refuses **before the kernel spawns**
+(`generation.require_generation_agents`) when the selection contains a
+`generate_from_prompt` task and *either* the loop's or the one-shot's client
+cannot be built — both halves need a working agent, or neither runs.
+
+**Offline determinism.** Two test seams, `generation.LOOP_CLIENT_FACTORY` and
+`generation.ONESHOT_CLIENT_FACTORY` (the `runner.CLIENT_FACTORY` precedent —
+the one-shot seam falls back to `runner.CLIENT_FACTORY` when its own is
+unset), drive the whole path against scripted fakes with no network; with them
+set, `score.json`/`generation.json` are byte-identical across repeated runs of
+the same fake, same as every other category's determinism guarantee.
 
 ---
 

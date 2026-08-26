@@ -4530,3 +4530,272 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   font-size: 9.5px;
   color: var(--faint);
 }
+
+/* ============================================== task-to-part generation
+   PRD-018 Slice 6. Same `.modal.wide` chrome as Library/Materials/Skills;
+   the body is a form that gives way to a live progress transcript (reusing
+   `.tool-chip`) and then a candidate gallery, all in the one scrolling pane —
+   there is no second modal for "results". */
+
+.gen-body { padding: 12px 14px 16px; overflow-y: auto; }
+.gen-form { display: flex; flex-direction: column; gap: 8px; }
+.gen-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.gen-prompt {
+  width: 100%;
+  resize: vertical;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.gen-prompt:focus { outline: none; border-color: var(--accent-ring); }
+
+.gen-attachments { display: flex; flex-wrap: wrap; gap: 6px; }
+.gen-attachments:empty { display: none; }
+.gen-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  padding: 2px 6px 2px 9px;
+}
+.gen-attach-chip .gen-attach-kind { color: var(--dim); }
+.gen-attach-chip button {
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.gen-attach-chip button:hover { color: var(--err); }
+.gen-attach-row { display: flex; align-items: center; gap: 10px; }
+.gen-attach-hint { font-size: 10.5px; color: var(--faint); }
+
+.gen-opts { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 2px; }
+.gen-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.gen-opt input {
+  width: 96px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.gen-opt input:focus { outline: none; border-color: var(--accent-ring); }
+
+.gen-error {
+  font-size: 11.5px;
+  color: var(--err-text);
+  background: var(--err-soft);
+  border: 1px solid var(--err-ring);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+.gen-submit-row { display: flex; justify-content: flex-end; }
+
+/* The intent record (FR2): what the loop normalized the prompt into, shown
+   before/alongside the transcript so the user can see what it aimed at. */
+.gen-intent {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.gen-intent-head {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+.gen-intent-row { display: flex; gap: 8px; padding: 3px 0; }
+.gen-intent-key {
+  flex: none;
+  width: 96px;
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.gen-intent-val { font-family: var(--mono); font-size: 11px; }
+.gen-intent-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+/* A draft spec chip (pre-build, no verdict yet) and a standards citation —
+   both the .spec-chip shape, neutral until the loop has actually measured
+   anything against them. */
+.gen-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 9px;
+  padding: 2px 7px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+}
+.gen-chip.gen-chip-standard { color: var(--accent-bright); border-color: var(--accent-ring); }
+
+/* Live progress: one lane per candidate, each a vertical stack of the SAME
+   `.tool-chip`s the chat dock renders (`create_part`/`render_view`/
+   `get_metrics`/`run_specs`/…), so "watching the part converge" looks like
+   the chat transcript the user already knows how to read. */
+.gen-progress { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+.gen-lane {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.gen-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--raised);
+  border-bottom: 1px solid var(--hairline);
+}
+.gen-lane-title { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+.gen-lane-thumb {
+  width: 40px;
+  height: 30px;
+  object-fit: contain;
+  background: var(--ink);
+  border: 1px solid var(--hairline-soft);
+  border-radius: 4px;
+  flex: none;
+}
+.gen-lane-status { font-size: 10.5px; color: var(--dim); margin-left: auto; }
+.gen-lane-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.gen-lane-body .tool-chip { align-self: stretch; max-width: none; }
+.gen-iter-note {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--faint);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+.gen-measure-note { font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
+
+/* The candidate gallery, on generation_done / the resolved generate_part
+   call: one card per terminal candidate, failed ones collapsed by default
+   (a near-miss is often the right starting point, so it is one click away,
+   never hidden). */
+.gen-gallery { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.gen-gallery-head {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.gen-card {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.gen-card.gen-card-best { border-color: var(--accent-ring); }
+.gen-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--raised);
+}
+.gen-card-thumb {
+  width: 64px;
+  height: 48px;
+  object-fit: contain;
+  background: var(--ink);
+  border: 1px solid var(--hairline-soft);
+  border-radius: 4px;
+  flex: none;
+}
+.gen-card-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.gen-card-name { font-family: var(--mono); font-size: 12px; color: var(--accent-bright); }
+/* The honest terminal-state chip (deliverable 5): green means kernel-valid
+   AND spec-green, anything else says so in words — "budget exhausted — best
+   so far" and "abandoned", never a fake success. */
+.gen-status-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 9px;
+  padding: 2px 7px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+  align-self: flex-start;
+}
+.gen-status-chip.gen-status-green { color: var(--ok); border-color: var(--ok); }
+.gen-status-chip.gen-status-amber {
+  color: var(--accent-bright);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.gen-status-chip.gen-status-red {
+  color: var(--err-text);
+  border-color: var(--err-ring);
+  background: var(--err-soft);
+}
+.gen-card-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+.gen-card-toggle { color: var(--dim); font-size: 11px; }
+.gen-card-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+.gen-card-body.hidden { display: none; }
+.gen-metrics { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.gen-failing { font-size: 11px; color: var(--err-text); }
+.gen-params-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.gen-params-table th {
+  text-align: left;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.gen-params-table td {
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--hairline-soft);
+  font-family: var(--mono);
+}
+.gen-params-table td.gen-param-name { color: var(--dim); font-family: inherit; }
+.gen-error-note {
+  font-size: 11px;
+  color: var(--err-text);
+  font-family: var(--mono);
+}
+
+/* The provenance badge (FR11): rendered at the top of the Parameters pane
+   for a part carrying `generated` off `get_part`, the same `.ref-badge`
+   language a reference part's provenance already uses. */
+.gen-badge-block { padding: 2px 0 10px; }
+.gen-badge-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gen-badge-meta {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--dim);
+  font-family: var(--mono);
+}

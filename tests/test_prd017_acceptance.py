@@ -716,7 +716,9 @@ def test_ac7_the_import_guards_still_fire(svc, registry, monkeypatch):
     """**AC7** — the 100 MB cap and the extension gate are untouched by the
     structured path: both refuse before anything is written."""
     assert MAX_IMPORT_BYTES == 100 * 1024 * 1024
-    assert SUPPORTED_EXTS == {".step", ".stp", ".brep", ".stl"}
+    # The CAD formats stay supported; the set may grow for other intake paths
+    # (PRD-018 added image/PDF), but an unsupported extension still refuses.
+    assert {".step", ".stp", ".brep", ".stl"} <= SUPPORTED_EXTS
     with pytest.raises(ValidationError):
         safe_import_name("model.obj")
 

@@ -41,7 +41,7 @@ def test_every_shipped_task_has_zero_problems():
 
 
 def test_the_shipped_set_is_five_per_category():
-    """The v1 task set is 25 tasks, five in each of the five categories.
+    """The v1 task set is 25 tasks, five in each of the five V1 categories.
 
     Equality, not membership, and deliberately so: this lands with the last
     authored bundle, so from here on a task added, removed or filed under the
@@ -49,11 +49,19 @@ def test_the_shipped_set_is_five_per_category():
     `bench-v1` means. `load_tasks` is used rather than a glob because it is
     the loader every consumer goes through, so a bundle that globs but does
     not LOAD fails here too.
+
+    `generate_from_prompt` (PRD-018) is a separate kind of task on its own
+    task_set (`gen-v1`), so it is measured on its own line below and is not part
+    of the `bench-v1` five-per-category invariant.
     """
     from collections import Counter
     counts = Counter(task.category for task in bench_tasks.load_tasks())
-    assert dict(counts) == {name: 5 for name in bench_tasks.CATEGORIES}
-    assert sum(counts.values()) == 25
+    v1 = {name: counts.get(name, 0) for name in bench_tasks.V1_CATEGORIES}
+    assert v1 == {name: 5 for name in bench_tasks.V1_CATEGORIES}
+    assert sum(v1.values()) == 25
+    # The generation category ships at least one authored bundle; it grows
+    # independently of the v1 self-test.
+    assert counts.get(bench_tasks.GENERATION_CATEGORY, 0) >= 1
 
 
 def test_exactly_one_task_per_category_is_in_the_fast_set():
@@ -67,7 +75,7 @@ def test_exactly_one_task_per_category_is_in_the_fast_set():
 
     fast = [task for task in bench_tasks.load_tasks(set_name="fast")]
     counts = Counter(task.category for task in fast)
-    assert dict(counts) == {name: 1 for name in bench_tasks.CATEGORIES}
+    assert dict(counts) == {name: 1 for name in bench_tasks.V1_CATEGORIES}
     assert len(fast) == 5
     # `core` is every task, so `fast` is a strict subset and never a lane of
     # its own: a task in `fast` but not `core` would be scored by the schedule
@@ -96,6 +104,11 @@ CATEGORY_DEFAULT_WEIGHTS = {
     "optimize_under_constraints": {"built": 0.10, "valid": 0.05, "specs": 0.45,
                                    "geometry": 0.00, "interference": 0.00,
                                    "metrics": 0.40},
+    # PRD-018 generation: a prompt-to-part task with a reference STEP, so
+    # geometry is scored; specs and metrics carry the design intent.
+    "generate_from_prompt": {"built": 0.15, "valid": 0.10, "specs": 0.30,
+                             "geometry": 0.25, "interference": 0.00,
+                             "metrics": 0.20},
 }
 
 #: The two overrides the v1 set ships, each argued in an HTML comment at the
