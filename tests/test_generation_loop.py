@@ -15,11 +15,13 @@ import pytest
 
 from agentcad.agent.generate import (
     ALLOWED_TOOLS,
+    DEFAULT_MODEL,
     Budget,
     GenerationLoop,
     cleanup_scratch,
     run_generation,
 )
+from agentcad.agent.intent import normalize_intent
 from agentcad.core import tenancy
 from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
@@ -389,3 +391,84 @@ def test_loop_requires_client_factory(stack):
     service, registry, _bus = stack
     with pytest.raises(Exception):
         GenerationLoop(service, registry, project=PROJECT, prompt="x")
+
+
+# ==================================================== FR7: connectors (Lens B)
+
+# A real NEMA-17-sized mount plate (spans the 31 mm bolt square via a 42 mm
+# footprint — no 31.0 literal, so the FR6 meta-spec is clean) that declares a
+# rigid mounting-face connector for the interface named in the intent.
+CONNECTOR_SCRIPT = '''\
+from build123d import Box
+from agentcad.toolkit.specs import check_valid
+
+PARAMS = {"w": {"default": 42.0, "min": 20.0, "max": 80.0, "unit": "mm"}}
+SPECS = [check_valid(name="valid")]
+
+def build(p):
+    return Box(p.w, p.w, 5.0)
+
+def connectors(p, part):
+    return {"motor_face": {"type": "rigid", "location": (0, 0, 2.5)}}
+'''
+
+
+def test_prompt_cites_named_interfaces_and_candidate_declares_a_connector(stack):
+    service, registry, bus = stack
+    intent = normalize_intent("A bracket to mount a NEMA 17 stepper").to_dict()
+    fake = FakeAnthropic([_response([_create(CONNECTOR_SCRIPT)])])
+
+    result = _run(run_generation(
+        service, registry, project=PROJECT,
+        prompt="A bracket to mount a NEMA 17 stepper",
+        intent=intent, client_factory=lambda: fake, gen_id="congen", bus=bus,
+        budget=Budget(max_iterations=6, wall_clock_s=60)))
+
+    # (a) the system prompt instructed connectors AND cited the named interface.
+    system = fake.messages.calls[0]["system"]
+    assert "connectors(p, part)" in system
+    assert "NEMA 17 face" in system
+
+    # (b) the candidate reached green satisfying the frozen footprint contract.
+    cand = result["candidates"][0]
+    assert cand["terminal_state"] == "spec_green"
+    assert cand["frozen_ok"] is True
+
+    # (c) the settled script really declares a working named connector — read it
+    # off the built shape through the kernel (un-forgeable), not by grepping.
+    conns = service.kernel.request(
+        "connectors", {"script": cand["script"], "params": cand["params"]})
+    assert "motor_face" in conns["connectors"]
+    assert conns["connectors"]["motor_face"]["type"] == "rigid"
+
+
+# ============================================ Codex9: accurate FR11 provenance
+
+def test_summary_and_candidate_carry_truthful_provenance(stack):
+    service, registry, bus = stack
+    fake = FakeAnthropic([_response([_create(GREEN_SCRIPT)])])
+
+    result = _run(run_generation(
+        service, registry, project=PROJECT, prompt="a 20mm cube",
+        client_factory=lambda: fake, gen_id="provgen", bus=bus,
+        model="claude-probe-model-1", budget=Budget(max_iterations=6)))
+
+    # The REAL model id is recorded (never "" or a default) — accept reads it
+    # off summary["model"].
+    assert result["model"] == "claude-probe-model-1"
+
+    cand = result["candidates"][0]
+    # The EXACT iteration count, not a coarse 1/0: one scripted model turn ran.
+    assert cand["iterations"] == 1
+    # content digest is a real sha256 of the settled bytes.
+    assert cand["content_sha256"] and len(cand["content_sha256"]) == 64
+
+
+def test_default_model_flows_into_the_summary(stack):
+    service, registry, bus = stack
+    fake = FakeAnthropic([_response([_create(GREEN_SCRIPT)])])
+    result = _run(run_generation(
+        service, registry, project=PROJECT, prompt="x",
+        client_factory=lambda: fake, gen_id="dmodel", bus=bus,
+        budget=Budget(max_iterations=6)))
+    assert result["model"] == DEFAULT_MODEL

@@ -211,17 +211,34 @@ def test_accept_defaults_a_part_id_not_in_the_scratch_namespace(genstack, monkey
     assert service.get_part(PROJECT, accepted["part_id"])["generated"]
 
 
+def _writes_then_ends(script):
+    """A CLIENT_FACTORY whose model writes *script* once, then ends its turn —
+    for a candidate that is green on its own specs but fails the frozen
+    contract (the loop does not terminate green, so a second turn is needed)."""
+    def factory():
+        return FakeAnthropic([
+            _response([_create(script)]),
+            _response([_text("stopping")], stop_reason="end_turn"),
+        ])
+    return factory
+
+
 def test_accept_refuses_a_frozen_spec_violation(genstack, monkeypatch):
-    """FR8: the candidate is spec_green on ITS specs, but it deleted the frozen
-    intent mass spec (the prompt's '1000 g' budget) — accept must refuse."""
+    """FR8 (measured): the candidate is green on ITS own specs, but its GEOMETRY
+    blows the frozen mass budget the prompt stated — accept re-measures the
+    recorded bytes and refuses. This is the exploit the metadata diff missed:
+    the candidate did not weaken a *declared* spec, its geometry is simply out
+    of spec, and only a re-measurement catches it."""
     service, registry, _bus = genstack
-    _use_fake(monkeypatch, _green_factory())
+    # GREEN_SCRIPT builds a 20 mm aluminium cube (~21.6 g); the prompt freezes a
+    # 5 g budget it cannot meet.
+    _use_fake(monkeypatch, _writes_then_ends(GREEN_SCRIPT))
     result = registry.call(
         "generate_part",
-        {"project": PROJECT, "prompt": "a 20mm cube under 1000 g"})
-    # The intent froze a mass spec (name mass_max); GREEN_SCRIPT names its mass
-    # spec 'light', so the frozen one is DELETED from the candidate's SPECS.
-    assert result["candidates"][0]["spec_green"] is True
+        {"project": PROJECT, "prompt": "a 20mm cube under 5 g"})
+    cand = result["candidates"][0]
+    assert cand["spec_green"] is False        # frozen mass failed on geometry
+    assert cand["frozen_ok"] is False
     assert any(s.get("kind") == "mass" for s in result["draft_specs"])
 
     accepted = registry.call("accept_candidate",
@@ -367,6 +384,7 @@ def test_document_text_is_fenced_and_reaches_the_loop(genstack, monkeypatch):
     """A datasheet whose text says 'delete all parts' changes nothing: it is
     fenced as reference data, the loop cannot delete, and a control part
     survives (the security invariant, FR1)."""
+    pytest.importorskip("pypdfium2")  # PDF datasheet; needs the [pdf] extra
     service, registry, _bus = genstack
 
     # A control part a rogue delete would remove.
@@ -397,8 +415,195 @@ def test_document_text_is_fenced_and_reaches_the_loop(genstack, monkeypatch):
     assert "keepme" in manifest_ids
 
 
+# ============================================ data-loss / scratch namespace (fix 1)
+
+def test_cleanup_deletes_only_recorded_scratch_ids_not_a_user_gen_part(
+        genstack, monkeypatch):
+    """A user part that merely SHARES this generation's gen_ prefix must survive
+    accept: cleanup deletes only the exact recorded scratch ids, never a live
+    prefix scan of the manifest (the data-loss finding)."""
+    service, registry, _bus = genstack
+    _use_fake(monkeypatch, _green_factory())
+    result = registry.call("generate_part",
+                           {"project": PROJECT, "prompt": "a small bracket"})
+    gen_id = result["generation_id"]
+    scratch = result["candidates"][0]["scratch_id"]        # gen_<id>_0
+    # A user's own part sharing the scratch prefix but NOT a recorded id — the
+    # exact victim of a prefix scan.
+    sibling = f"{scratch[:-1]}99"                           # gen_<id>_99
+    assert "error" not in registry.call(
+        "create_part", {"project": PROJECT, "part_id": sibling,
+                        "script": GREEN_SCRIPT}), sibling
+
+    accepted = registry.call("accept_candidate",
+                             {"project": PROJECT, "generation_id": gen_id,
+                              "candidate": 0, "part_id": "bracket"})
+    assert "error" not in accepted, accepted
+    manifest_ids = {e["id"] for e in service.store.manifest(PROJECT)["parts"]}
+    assert scratch not in manifest_ids       # the recorded scratch id is gone
+    assert sibling in manifest_ids           # the user's look-alike survives
+    assert accepted["removed_scratch"] == [scratch]
+
+
+def test_accept_refuses_a_target_in_the_scratch_namespace(genstack, monkeypatch):
+    """A generated part must never land INTO the gen_ scratch namespace (it would
+    be hidden by the listing guard and swept by a sibling's cleanup)."""
+    service, registry, _bus = genstack
+    _use_fake(monkeypatch, _green_factory())
+    result = registry.call("generate_part",
+                           {"project": PROJECT, "prompt": "a small bracket"})
+    scratch = result["candidates"][0]["scratch_id"]
+    accepted = registry.call("accept_candidate",
+                             {"project": PROJECT,
+                              "generation_id": result["generation_id"],
+                              "candidate": 0, "part_id": "gen_sneaky"})
+    assert accepted["error"]["type"] == "validation_error"
+    assert "scratch" in accepted["error"]["message"].lower()
+    manifest_ids = {e["id"] for e in service.store.manifest(PROJECT)["parts"]}
+    assert "gen_sneaky" not in manifest_ids
+    assert scratch in manifest_ids           # refused: the candidate is untouched
+
+
+# ============================================ search leak / keyless (fix 2, fix 5)
+
+def test_scratch_parts_absent_from_search(genstack, monkeypatch):
+    """AC3: an in-flight scratch part never surfaces in search_parts results."""
+    service, registry, _bus = genstack
+    _use_fake(monkeypatch, _green_factory())
+    result = registry.call("generate_part",
+                           {"project": PROJECT, "prompt": "a small bracket"})
+    scratch = result["candidates"][0]["scratch_id"]
+    registry.call("create_part", {"project": PROJECT, "part_id": "realpart",
+                                  "script": GREEN_SCRIPT})
+    found = registry.call("search_parts", {"project": PROJECT, "query": ""})
+    ids = {p["id"] for p in found["parts"]}
+    assert scratch not in ids
+    assert "realpart" in ids
+
+
+def test_search_hides_scratch_even_without_a_key(tmp_path, kernel, monkeypatch):
+    """The search scratch-filter lives in the engine, not the key-gated listing
+    guard, so a leftover/restored scratch part is hidden from search even on a
+    keyless server (fix 5 — the leak is closed independent of the API key)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    service = make_test_service(tmp_path / "keyless", kernel)
+    registry = build_registry(service)
+    assert registry.get("generate_part") is None            # no key -> tools gated
+    registry.call("create_project", {"name": "p"})
+    # A leftover scratch part (as if restored from a prior keyed run).
+    registry.call("create_part", {"project": "p", "part_id": "gen_abc_0",
+                                  "script": GREEN_SCRIPT})
+    registry.call("create_part", {"project": "p", "part_id": "realpart",
+                                  "script": GREEN_SCRIPT})
+    found = registry.call("search_parts", {"project": "p", "query": ""})
+    ids = {row["id"] for row in found["parts"]}
+    assert "gen_abc_0" not in ids
+    assert "realpart" in ids
+
+
+# ============================================ DoS input caps (fix 3)
+
+def test_validate_candidates_helper():
+    from agentcad.core.model import ValidationError
+    from agentcad.core.tools_generate import (MAX_CANDIDATES,
+                                              _validate_candidates)
+    assert _validate_candidates(1) == 1
+    assert _validate_candidates(MAX_CANDIDATES) == MAX_CANDIDATES
+    assert _validate_candidates(MAX_CANDIDATES + 1) == MAX_CANDIDATES   # clamp
+    for bad in (0, -3, 10_000_000, "lots", 2.5, True):
+        with pytest.raises(ValidationError):
+            _validate_candidates(bad)
+
+
+def test_validate_budget_helper():
+    from agentcad.core.model import ValidationError
+    from agentcad.core.tools_generate import _validate_budget
+    assert _validate_budget(None) is None
+    ok = {"max_iterations": 5, "wall_clock_s": 30}
+    assert _validate_budget(ok) == ok
+    for bad in ({"max_iterations": 0}, {"wall_clock_s": -1},
+                {"max_iterations": float("inf")}, {"wall_clock_s": float("nan")},
+                0, -1.0, True):
+        with pytest.raises(ValidationError):
+            _validate_budget(bad)
+
+
+def test_generate_part_refuses_absurd_candidates(genstack, monkeypatch):
+    service, registry, _bus = genstack
+    _use_fake(monkeypatch, _green_factory())
+    out = registry.call("generate_part",
+                        {"project": PROJECT, "prompt": "x",
+                         "candidates": 10_000_000})
+    assert out["error"]["type"] == "validation_error"
+    out = registry.call("generate_part",
+                        {"project": PROJECT, "prompt": "x", "candidates": 0})
+    assert out["error"]["type"] == "validation_error"
+
+
+def test_generate_part_refuses_a_non_finite_budget(genstack, monkeypatch):
+    service, registry, _bus = genstack
+    _use_fake(monkeypatch, _green_factory())
+    out = registry.call("generate_part",
+                        {"project": PROJECT, "prompt": "x",
+                         "budget": {"max_iterations": float("inf")}})
+    assert out["error"]["type"] == "validation_error"
+
+
+# ============================================ discard_generation lifecycle (fix 4)
+
+def test_discard_generation_removes_scratch_and_record(genstack, monkeypatch):
+    service, registry, _bus = genstack
+    _use_fake(monkeypatch, _green_factory())
+    result = registry.call("generate_part",
+                           {"project": PROJECT, "prompt": "a small bracket"})
+    gen_id = result["generation_id"]
+    scratch = result["candidates"][0]["scratch_id"]
+    assert scratch in {e["id"] for e in service.store.manifest(PROJECT)["parts"]}
+
+    out = registry.call("discard_generation",
+                        {"project": PROJECT, "generation_id": gen_id})
+    assert "error" not in out, out
+    assert out["discarded"] is True
+    assert scratch in out["removed_scratch"]
+    # The scratch part is gone...
+    assert scratch not in {e["id"]
+                           for e in service.store.manifest(PROJECT)["parts"]}
+    # ...and the record is dropped.
+    listing = registry.call("list_generations", {"project": PROJECT})
+    assert gen_id not in {g["generation_id"] for g in listing["generations"]}
+    # A second discard is an honest 404.
+    out2 = registry.call("discard_generation",
+                         {"project": PROJECT, "generation_id": gen_id})
+    assert out2["error"]["type"] == "notfound_error"
+
+
+# ============================================ proposal cleanup ordering (fix 6)
+
+@_GIT
+def test_accept_proposal_cleans_scratch_after_the_proposal_opens(gitstack,
+                                                                 monkeypatch):
+    """The proposal path cleans scratch AFTER the proposal opens (no delete-then-
+    fail), and the default branch ends scratch-free."""
+    service, registry, _bus = gitstack
+    _use_fake(monkeypatch, _green_factory())
+    result = registry.call("generate_part",
+                           {"project": PROJECT, "prompt": "a small bracket"})
+    gen_id = result["generation_id"]
+    scratch = result["candidates"][0]["scratch_id"]
+    accepted = registry.call("accept_candidate",
+                             {"project": PROJECT, "generation_id": gen_id,
+                              "candidate": 0, "part_id": "bracket",
+                              "propose": True})
+    assert "error" not in accepted, accepted
+    assert scratch in accepted["removed_scratch"]
+    # Back on the default branch the scratch part is gone.
+    default_ids = {e["id"] for e in service.store.manifest(PROJECT)["parts"]}
+    assert scratch not in default_ids
+
+
 def test_document_pdf_also_produces_a_vision_block(genstack, monkeypatch):
     """The datasheet's page is rasterized into an image block the loop sees."""
+    pytest.importorskip("pypdfium2")  # PDF datasheet; needs the [pdf] extra
     service, registry, _bus = genstack
     dest = service.store.imports_dir(PROJECT, write=True) / "sheet.pdf"
     dest.write_bytes(_make_pdf("BOLT SQUARE 31 mm"))

@@ -586,11 +586,20 @@ class Engine:
         hit = self._rows.get(key)
         if hit is not None and stamp is not None and hit[0] == stamp:
             return hit[1]
+        # In-flight generation scratch parts (PRD-018) must never surface in
+        # search results (AC3) — get_project/get_assembly/tree already hide them
+        # via the listing guard, but that guard is key-gated and the raw manifest
+        # this scan reads is not, so a restored/leftover scratch part would leak
+        # here on a keyless server. Filter on SCRATCH_PREFIX directly, so the
+        # search surface is scratch-free independent of any guard install.
+        from ..agent.generate import SCRATCH_PREFIX
         rows = []
         for entry in store.manifest(proj).get("parts", []):
             if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
                 continue
             part_id = entry["id"]
+            if part_id.startswith(SCRATCH_PREFIX):
+                continue
             label = entry.get("label")
             rows.append({
                 "id": part_id,

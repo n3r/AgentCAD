@@ -307,6 +307,43 @@ def register(toolbox: dict) -> dict:
                     "message": f"{type(exc).__name__}: {exc}",
                     "details": details}
 
+    def handle_frozen_measure(params: dict) -> dict:
+        """Build the UNMODIFIED candidate script and return its raw kernel
+        metrics — the PRD-018 frozen-contract measurement.
+
+        This is the un-forgeable channel the server-owned frozen verdict
+        (:func:`agentcad.agent.intent.frozen_verdict`) reads. It builds the
+        script **byte-for-byte the way ``handle_build``/``create_part`` does**
+        — via ``build_shape_ns`` with no ``SPECS`` declared or appended — so a
+        candidate's ``build()`` sees exactly the ``globals()["SPECS"]`` it sees
+        in normal use and has no probe to branch on. It never evaluates a
+        candidate predicate: it returns only kernel-computed numbers (the
+        bounding-box size, mass, volume, and, when a frozen wall spec exists,
+        the minimum wall thickness), and the server evaluates the frozen bounds
+        against them itself.
+
+        ``need_wall`` gates the min-wall probe (it is the one expensive
+        measurement); ``min_wall`` is ``None`` when no sampled ray hit an
+        opposing face, which the server treats as fail-closed.
+        """
+        shape, _values, _warnings, ns = build_shape_ns(
+            params["script"], params.get("params") or {})
+        m = shape_metrics(shape, float(params.get("density_g_cm3", 1.0)),
+                          params.get("densities") or None, _solid_labels(ns))
+        bbox = m["bbox"]
+        out = {
+            "size": [float(bbox["max"][i] - bbox["min"][i]) for i in range(3)],
+            "mass_g": float(m["mass_g"]),
+            "volume_mm3": float(m["volume_mm3"]),
+            "is_valid": bool(m["is_valid"]),
+            "n_solids": int(m["n_solids"]),
+        }
+        if params.get("need_wall"):
+            probe = _min_wall(shape, None, int(params.get("wall_grid", 8)))
+            thickness = probe.get("min_thickness_mm")
+            out["min_wall"] = None if thickness is None else float(thickness)
+        return out
+
     def handle_spec_declare(params: dict) -> dict:
         scope = params.get("scope") or "part"
         if scope not in ("part", "project"):
@@ -418,4 +455,5 @@ def register(toolbox: dict) -> dict:
         return result
 
     return {"spec_declare": handle_spec_declare, "spec_eval": handle_spec_eval,
-            "clearance": handle_clearance}
+            "clearance": handle_clearance,
+            "frozen_measure": handle_frozen_measure}

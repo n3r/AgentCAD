@@ -87,6 +87,7 @@ part — the restricted tool list plus this scoping is the safety boundary.
 from __future__ import annotations
 
 import base64
+import hashlib
 import inspect
 import json
 import time
@@ -182,7 +183,13 @@ Your workspace:
   injected render image and measurements, then fix the script and write again.
 - Give the part typed PARAMS over its tunable dimensions, and encode every
   stated constraint as a spec (a SPECS list built from
-  agentcad.toolkit.specs's check_* constructors) so "done" is measurable.
+  agentcad.toolkit.specs's check_* constructors) so "done" is measurable. A
+  stated interface dimension (a bolt square, a pilot bore, a board footprint)
+  MUST be a PARAM, never a magic number baked into build().
+- For every named interface in the intent, declare a matching named frame in a
+  connectors(p, part) function (see the assemblies-and-mates skill) so a
+  downstream assembly can mate to it — a rigid frame on the mounting face, the
+  bore/shaft axis, the board edge. {connector_directive}
 - NEVER invent a standard dimension (a NEMA frame, an ISO fit): the numbers you
   are given for a standard are authoritative; cite them, do not guess.
 
@@ -437,6 +444,10 @@ class GenerationLoop:
         summary = {
             "generation_id": self.gen_id,
             "project": self.project,
+            # The REAL model id this run drove (Codex9): provenance records what
+            # was actually used, never "" or a default. accept reads it off the
+            # persisted generation record.
+            "model": self.model,
             "budget": self.budget.as_dict(),
             "candidates": results,
             "best": best,
@@ -476,6 +487,18 @@ class GenerationLoop:
             "terminal_state": None,
             "spec_green": False,
             "failing_checks": [],
+            # The EXACT count of model API turns this candidate spent (Codex9):
+            # provenance records the real iteration count, not a coarse 1/0.
+            "iterations": 0,
+            # The frozen-intent contract, re-measured server-side against the
+            # candidate's geometry (never a metadata diff). ``frozen_ok`` gates
+            # spec_green; ``frozen_violations`` names what the geometry missed.
+            "frozen_ok": False,
+            "frozen_violations": [],
+            # The immutable snapshot accept binds to (Blocker 2): the exact
+            # script bytes and their digest at the moment the candidate settled.
+            "content_sha256": None,
+            "material": None,
             "error": None,
             # internal best-so-far snapshot (highest score seen)
             "_best_snapshot": None,
@@ -523,8 +546,9 @@ class GenerationLoop:
             deadline=(time.monotonic() + self.budget.wall_clock_s
                       if self.budget.wall_clock_s else None))
         tools = self._tool_definitions()
-        system = GEN_SYSTEM_PROMPT.format(scratch_id=scratch_id,
-                                          project=self.project)
+        system = GEN_SYSTEM_PROMPT.format(
+            scratch_id=scratch_id, project=self.project,
+            connector_directive=self._connector_directive())
         history: list[dict] = [{"role": "user",
                                 "content": self._initial_content()}]
         consecutive_errors = 0
@@ -546,6 +570,7 @@ class GenerationLoop:
                 return
 
             iteration += 1
+            state["iterations"] = iteration
             blocks = [_block_to_dict(b) for b in response.content]
             history.append({"role": "assistant", "content": blocks})
             self._publish({
@@ -595,6 +620,9 @@ class GenerationLoop:
                 "kernel_valid": None, "spec_status": None,
                 "spec_passed": 0, "spec_failed": 0,
                 "failing_checks": [], "error": None, "stop_reason": None,
+                # Set only when the candidate's OWN specs come back green — that
+                # is the one moment the server re-measures the frozen contract.
+                "frozen_ok": None, "frozen_violations": [],
             }
 
             observations: list[dict] = []
@@ -619,7 +647,12 @@ class GenerationLoop:
                 else:
                     consecutive_errors = 0
                     state["error"] = None
-                    if log_entry["spec_status"] == "green":
+                    # spec_green requires BOTH the candidate's own specs green
+                    # AND the server-measured frozen contract satisfied (no
+                    # skip/error). A candidate green on its own specs but short
+                    # of the frozen intent keeps iterating — it has not won.
+                    if log_entry["spec_status"] == "green" \
+                            and log_entry.get("frozen_ok"):
                         state["terminal_state"] = "spec_green"
                         state["spec_green"] = True
                         log_entry["stop_reason"] = "spec_green"
@@ -700,9 +733,40 @@ class GenerationLoop:
         # --- snapshot the part, update best-so-far ------------------------
         part = await self._dispatch(loop, "get_part", {}, scratch_id, n,
                                     auto=True)
+        script = part.get("script") if isinstance(part, dict) else None
+        params = part.get("params", {}) if isinstance(part, dict) else {}
+        material = part.get("material") if isinstance(part, dict) else None
+
+        # --- frozen-intent contract, RE-MEASURED against this geometry -----
+        # Only when the candidate's own specs are green (the one near-terminal
+        # moment): the server re-derives the frozen specs from the intent and
+        # measures them against the built shape, so a neutered/weakened
+        # candidate spec cannot buy a green verdict (Blockers 1 & 3). Fail-
+        # closed: an errored/skipped frozen check is not a pass.
+        frozen_ok, frozen_violations = None, []
+        if kernel_valid and spec_status == "green":
+            tenant = tenancy.current_tenant()
+            frozen = await loop.run_in_executor(
+                None, self._frozen_eval, script, params, material,
+                scratch_id, str(n), tenant)
+            frozen_ok = bool(frozen["frozen_ok"])
+            frozen_violations = list(frozen["frozen_violations"])
+            log_entry["frozen_ok"] = frozen_ok
+            log_entry["frozen_violations"] = frozen_violations
+            if not frozen_ok:
+                # Surface the shortfall to the model so it can fix the geometry
+                # next turn — the frozen specs it must satisfy are the server's.
+                observations.append({
+                    "type": "text",
+                    "text": "[loop: the part passed your own specs but does "
+                            "NOT satisfy the frozen intent requirements — fix "
+                            "the geometry] " + json.dumps(frozen_violations)})
+
         snapshot = {
-            "script": part.get("script") if isinstance(part, dict) else None,
-            "params": part.get("params", {}) if isinstance(part, dict) else {},
+            "script": script,
+            "content_sha256": content_sha256(script),
+            "params": params,
+            "material": material,
             "metrics": metrics if kernel_valid else (
                 state.get("metrics")),
             "spec_report": specs if isinstance(specs, dict) else None,
@@ -712,8 +776,24 @@ class GenerationLoop:
             "spec_failed": log_entry["spec_failed"],
             "spec_status": spec_status,
             "failing_checks": failing,
+            "frozen_ok": frozen_ok,
+            "frozen_violations": frozen_violations,
         }
         _consider_snapshot(state, snapshot, self.intent)
+
+    def _frozen_eval(self, script, params, material, scratch_id, cid_suffix,
+                     tenant) -> dict:
+        """Run the frozen-spec re-measurement under this candidate's identity
+        and tenant (the executor thread inherits neither — the ``_call_tool``
+        pattern). Never raises: a failed measurement is a fail-closed verdict."""
+        locks.set_client_id(f"gen:{self.gen_id}:{cid_suffix}")
+        token = tenancy.set_tenant(tenant)
+        try:
+            return evaluate_frozen_specs(
+                self.service, self.project, script, params, material,
+                self.intent, affinity=scratch_id)
+        finally:
+            tenancy.reset_tenant(token)
 
     def _initial_content(self) -> list[dict]:
         """The first user turn: the prompt, any prepared images, the intent
@@ -739,6 +819,21 @@ class GenerationLoop:
                            "text": "[intent record — reference data]\n"
                                    + json.dumps(self.intent, default=str)})
         return blocks
+
+    def _connector_directive(self) -> str:
+        """The FR7 line naming THIS request's interfaces so the model declares a
+        connector for each. Empty-interface case says so plainly rather than
+        leaving a dangling ``{connector_directive}`` placeholder."""
+        labels: list[str] = []
+        for iface in (self.intent.get("interfaces") or []):
+            label = iface.get("label") if isinstance(iface, dict) else None
+            if isinstance(label, str) and label and label not in labels:
+                labels.append(label)
+        if not labels:
+            return ("This request names no explicit interface; still declare a "
+                    "connector for any face another part must mate to.")
+        return ("Named interface(s) to give a connector: "
+                + ", ".join(labels) + ".")
 
     def _make_client(self, n: int) -> Any:
         """Build one candidate's raw client from the factory.
@@ -809,11 +904,18 @@ def _finalize_from_best(state: dict) -> None:
     if not best:
         return
     state["script"] = best.get("script")
+    state["content_sha256"] = best.get("content_sha256")
     state["params"] = best.get("params", {})
+    state["material"] = best.get("material")
     state["metrics"] = best.get("metrics")
     state["spec_report"] = best.get("spec_report")
     state["render_path"] = best.get("render_path")
     state["failing_checks"] = best.get("failing_checks", [])
+    # The frozen verdict travels with the best snapshot. A candidate that never
+    # reached a frozen measurement (never spec-green on its own) is frozen_ok
+    # False with no violations named — it simply never got that far.
+    state["frozen_ok"] = bool(best.get("frozen_ok"))
+    state["frozen_violations"] = list(best.get("frozen_violations") or [])
 
 
 def _pick_best(candidates: list[dict], intent: dict) -> int | None:
@@ -859,6 +961,89 @@ def _failed(spec_report: Any) -> int:
 async def run_generation(service, registry, **kwargs) -> dict:
     """Run a generation loop; see the module docstring for the full contract."""
     return await GenerationLoop(service, registry, **kwargs).run()
+
+
+def content_sha256(script: str | None) -> str:
+    """The digest that binds a candidate record to its exact script bytes."""
+    return hashlib.sha256((script or "").encode("utf-8")).hexdigest()
+
+
+def evaluate_frozen_specs(service, project: str, script: str | None,
+                          params: dict | None, material: str | None,
+                          intent_dict: dict | None, *,
+                          affinity: str | None = None,
+                          timeout_s: float = 120.0) -> dict:
+    """Re-measure the **frozen intent-specs** against the geometry *script*
+    builds — the PRD-018 integrity gate (Blockers 1-3).
+
+    Server-owned end to end: the frozen specs are re-derived from the frozen
+    *intent_dict* (never from the candidate's re-declared ``SPECS``), and the
+    geometry is measured by building the **UNMODIFIED recorded script** through
+    the kernel ``frozen_measure`` op — byte-for-byte what ``create_part``
+    builds, with NO ``SPECS`` declared or appended. That is the load-bearing
+    invariant: an earlier design appended a probe ``SPECS`` block whose names a
+    malicious ``build()`` could read off ``globals()["SPECS"]`` to serve
+    compliant geometry only while probed and its real, frozen-violating geometry
+    otherwise. Building the recorded bytes unchanged leaves ``build()`` no signal
+    to branch on. The frozen bounds/predicates are then evaluated server-side
+    (:func:`~agentcad.agent.intent.frozen_verdict`). Returns
+    ``{"frozen_ok", "frozen_violations", "checks"}`` (fail-closed: a frozen spec
+    whose measurement is missing is not a pass).
+
+    A candidate with no machine-checkable frozen constraint is trivially
+    ``frozen_ok`` (nothing to enforce, no kernel call). A measurement that raises
+    is a *violation*, not a pass — the geometry could not be vouched for.
+    """
+    from ..kernel.client import KernelError
+    from .intent import (Intent, frozen_needs_wall, frozen_specs,
+                         frozen_verdict, interface_dims_parameterized)
+
+    intent = Intent.from_dict(intent_dict or {})
+    # The FR6 output-contract meta-spec (Codex8 / Decision 5): a stated
+    # interface dimension baked in as a magic number instead of a PARAM. Server-
+    # owned (it reads the RECORDED script + params, not a candidate verdict), so
+    # it rides the same frozen verdict and gates terminate AND accept.
+    meta = interface_dims_parameterized(intent, script or "", params or {})
+
+    specs = frozen_specs(intent)
+    if not specs:
+        return _with_meta({"frozen_ok": True, "frozen_violations": [],
+                           "checks": []}, meta)
+    try:
+        density = service.material_density(project, material or "al6061")
+    except Exception:  # noqa: BLE001 — an unknown material is not this gate's
+        density = 1.0  #                 error to raise; measure with unit density
+    try:
+        # Build the UNMODIFIED script and read its kernel-computed metrics. No
+        # SPECS is appended, so build()'s globals()["SPECS"] is identical to a
+        # normal build — it cannot detect the measurement and swap geometry.
+        result = service.kernel.request(
+            "frozen_measure",
+            {"script": script or "", "params": params or {},
+             "density_g_cm3": density, "densities": None,
+             "need_wall": frozen_needs_wall(specs)},
+            timeout_s=timeout_s, affinity=affinity)
+    except KernelError as exc:
+        payload = exc.to_payload() if hasattr(exc, "to_payload") else {}
+        message = payload.get("message") or str(exc)
+        return _with_meta({"frozen_ok": False, "checks": [],
+                           "frozen_violations": [
+                               "frozen intent-specs could not be measured "
+                               f"against the candidate geometry: {message}"]},
+                          meta)
+    return _with_meta(frozen_verdict(intent, result), meta)
+
+
+def _with_meta(verdict: dict, meta_violations: list[str]) -> dict:
+    """Fold the FR6 meta-spec violations into a geometry frozen verdict."""
+    if not meta_violations:
+        return verdict
+    return {
+        "frozen_ok": bool(verdict.get("frozen_ok")) and not meta_violations,
+        "frozen_violations": list(verdict.get("frozen_violations") or [])
+        + list(meta_violations),
+        "checks": list(verdict.get("checks") or []),
+    }
 
 
 def cleanup_scratch(service, project: str, gen_id: str) -> list[str]:

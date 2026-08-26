@@ -870,7 +870,7 @@ tools without a restart); `GET /api/tools` is the live check.
 | Tool | Arguments | Returns |
 |---|---|---|
 | `generate_part` | **project, prompt**, images, files, candidates, budget | Normalizes `prompt` into an intent record (grounding any named standard — e.g. a NEMA frame — from the shipped `tables/*.json`, never the model), freezes its draft specs, then runs N `candidates` (default 1) of the loop, each authoring ONE part on its own scratch id. Runs **synchronously** — the call does not return until every candidate has reached a terminal state, which can be minutes; watch `generation_progress`/`generation_done` (below) to render progress meanwhile. `images`/`files` are filenames **already uploaded** via `POST /projects/{proj}/imports` — png/jpg reach the model as vision, a `.pdf` is rasterized page-by-page and its text extracted (both behind the `[pdf]` extra; absent it, a `.pdf` is a `validation_error` naming the extra). Returns `{generation_id, project, budget, best, candidates: [{candidate, scratch_id, script, params, metrics, spec_report, render_path, iteration_log, terminal_state: "spec_green"\|"budget_exhausted"\|"abandoned", spec_green, failing_checks, error}], intent, draft_specs}`. `best` is the index of the strongest candidate (a `spec_green` one wins outright; otherwise the highest `(kernel_valid, spec_pass_count, -spec_fails, -metric_distance)`), or `null` with zero candidates. Every candidate is left as a **scratch part** (`gen_<id>_<n>` — hidden from `get_project`'s part list and `list_projects`' `n_parts`) until you `accept_candidate` one; nothing here writes a real part. |
-| `accept_candidate` | **project, generation_id, candidate**, part_id, propose | Reads the candidate's scratch script + params, recreates them at `part_id` (default a generated `gp_<genid>_<n>` id), stamps FR11 provenance (below), and `delete_part`s **every** scratch part of the generation (siblings included — a generation is accepted or discarded as a whole). **Refuses** (`validation_error`, `details.frozen_violations`) a candidate that weakened or deleted a frozen intent-spec — see below. Lands directly on your current branch, or — with history available, proposals wired, and a hosted deployment (or `propose: true` forced) — on a fresh `gen/<id>` branch behind a `proposal_create` (Decision 9; see [Change proposals](#change-proposals)). Returns `{part_id, generation_id, candidate, direct, proposal?, branch?, removed_scratch, generated}`. |
+| `accept_candidate` | **project, generation_id, candidate**, part_id, propose | Binds to the candidate's **immutable recorded bytes** (the generation record's snapshot script/params, never the live — possibly further-mutated — scratch part), RE-MEASURES the frozen intent contract against those exact bytes under the project turn, then recreates them at `part_id` (default a generated `gp_<genid>_<n>` id), stamps FR11 provenance (below), and `delete_part`s **every** scratch part of the generation (siblings included — a generation is accepted or discarded as a whole). **Refuses** (`validation_error`, `details.frozen_violations`) a candidate whose GEOMETRY does not satisfy the frozen intent requirements — see below; this is a second, independent re-check on top of the one the loop itself already required before it would call a candidate `spec_green`. Lands directly on your current branch, or — with history available, proposals wired, and a hosted deployment (or `propose: true` forced) — on a fresh `gen/<id>` branch behind a `proposal_create` (Decision 9; see [Change proposals](#change-proposals)). Returns `{part_id, generation_id, candidate, direct, proposal?, branch?, removed_scratch, generated}`. |
 | `list_generations` | **project** | `{project, generations: [{generation_id, created, prompt_sha256, model, budget, best, intent, draft_specs, candidates: [{candidate, scratch_id, terminal_state, spec_green, failing_checks, metrics, params, render_path, error}]}]}` — the persisted record, **not** the full script/spec-report (those live on the scratch part until accept/cleanup). A top-level manifest loose key (`generations`), so it survives `project_restore` for free like `pmi`/`bom`. |
 | `generation_status` | **project, generation_id** | `{project, generation_id, background: false, state: "complete", best, candidates, created, intent}`. `generate_part` runs to completion before it returns, so a status read is always of a **finished** run — `background`/`state` are the PRD-020 async-job shape, always `false`/`"complete"` today; this tool exists so a future background mode changes no field name, only the values. |
 
@@ -885,16 +885,55 @@ NEMA frame the table does not carry) grounds nothing rather than inventing a
 number. The structured constraints become a **draft `SPECS`** block built
 from the real `agentcad.toolkit.specs` constructors (`check_bbox`,
 `check_mass`, `check_wall`, `check_clearance`, `check_that`) and that draft is
-**frozen** at `generate_part` time. **The freeze is diffed at
-`accept_candidate`, not inside the loop's own terminate check**: the loop
-lets the model iterate freely (a run can reach `spec_green` with a script that
-already weakened a frozen bound, if the weakened version still passes
-whatever `SPECS` the script currently declares), and it is only the accept
-call that reads the candidate's *declared* `SPECS` off its scratch part and
-diffs them against the frozen set (`agent.intent.frozen_spec_violation`) —
-counting only the frozen rows, where a deleted one is a violation and a
-strengthened or added one is fine. Read `generate_part`'s `draft_specs` in the
-result to see exactly what will be enforced at accept.
+**frozen** at `generate_part` time.
+
+A grounded standard freezes what can be **measured un-forgeably**: the
+overall **footprint** (a NEMA-17 mount must cover its 42 mm plate) and, via
+the FR6 meta-spec (`interface_dims_parameterized`), that the standard's
+dimensions (bolt-square pitch, clearance/pilot diameters) appear in `PARAMS`
+rather than as hard-coded literals. **Feature-position verification — the four
+mounting holes at the 31 mm pitch, the M3 clearance and central pilot bores at
+the right places — is deferred, deliberately.** The only spec kind that reads
+topology is `check_that`, whose predicate is a candidate-supplied callable the
+kernel evaluates *after* `build()` runs, so it is forgeable via `globals()
+["SPECS"] = [...]` — exactly the vector the frozen re-measurement below is
+built to defeat. An un-forgeable feature check needs a **kernel-computed
+circle-inventory measurement** (radii + centers read off the B-rep by
+server-controlled handler code, like `check_bbox` measures size); that
+primitive lives in `kernel/handlers/specs.py` and is a follow-up. Until then,
+a garbage part still **cannot land** as a NEMA mount — it fails the footprint
+frozen check — but "the holes are in the right spots" is not yet a
+machine-verified claim (`agent.intent.FEATURE_GEOMETRY_DEFERRED`).
+
+**The frozen contract is enforced by RE-MEASURING it against built geometry —
+never by diffing the candidate's re-declared `SPECS`, and never by anything the
+candidate's `build()` can observe.** A candidate's `build()` is arbitrary Python
+that runs in the module namespace and can read and rewrite its own `SPECS`
+(`globals()["SPECS"]`), so two families of forge have to be closed: a metadata
+diff of "what SPECS does the script declare" can be neutered (keep a frozen
+check's name, swap its predicate to always-pass), AND — subtler — any scheme
+that *modifies the script before building* (e.g. appending measurement "probe"
+SPECS) is **observable**: `build()` can detect the probe names and serve
+compliant geometry only while measured, its real geometry otherwise. So
+`agent.generate.evaluate_frozen_specs` measures through a path `build()` cannot
+distinguish from ordinary use: the **`frozen_measure`** kernel op builds the
+candidate's **UNMODIFIED** recorded bytes — byte-for-byte what `create_part`
+builds, nothing appended to `SPECS` — and returns only kernel-computed numbers
+(bbox `size`, `mass_g`, `volume_mm3`, and `min_wall` when a frozen wall spec
+exists), read straight off the B-rep. The server (`agent.intent.frozen_verdict`)
+then evaluates every frozen bound **itself** against those numbers, fail-closed:
+a build error or a missing/ill-typed metric is a *violation*, not a pass. The
+candidate cannot forge a kernel measurement and, because its bytes are built
+unchanged, cannot even tell that a measurement is happening. This runs at TWO
+points, both server-owned: (1) **inside the loop**, every time a candidate's
+own SPECS come back green — `frozen_ok` gates `spec_green` itself, so a
+candidate that is green on its own (possibly weakened) specs but violates the
+frozen contract keeps iterating rather than terminating; and (2) **again at
+`accept_candidate`**, re-measured against the candidate's immutable recorded
+script bytes (never the live, possibly further-mutated scratch part) under
+the project turn, as a second, independent check before anything lands. Read
+`generate_part`'s `draft_specs` in the result to see exactly what is
+enforced.
 
 **Events**, on the shared bus: `generation_progress {project, generation_id,
 candidate, iteration, phase}` (`phase` one of `iterate`, `render`, `measured`,
@@ -959,8 +998,9 @@ injected into the next turn — is dispatched **by the loop's own code**, not
 requested of the model, so a model that never calls those tools itself still
 gets measured every iteration.
 
-**Honest limits.** `spec_green` means the kernel accepted the geometry and
-every spec the script currently declares passed — it is **not** a proof the
+**Honest limits.** `spec_green` means the kernel accepted the geometry, every
+spec the script currently declares passed, AND the frozen intent contract
+re-measured true against the built shape (above) — it is **not** a proof the
 part is the right shape. The specs a candidate writes are only as good as the
 constraints the prompt (or the intent normalizer) made machine-checkable; a
 part can be metric-green and still solve the wrong problem, mount to the
@@ -971,6 +1011,26 @@ it, the same way you would review any other agent-authored script. A
 `budget_exhausted` result is not a failure to hide — it is the loop being
 honest that it ran out of time/iterations before converging, with the
 best-so-far evidence attached rather than a fabricated green.
+
+**Honest trust boundary — read before treating any of this as a security
+control.** A generated part script **is arbitrary Python**, exactly like any
+other script part in this repo (`AGENTS.md`'s hosted-core trap): it is not
+sandboxed *by this feature*, and PRD-018 adds no new confinement of its own —
+whatever isolation exists is the general PRD-006 worker sandboxing (Landlock
++ seccomp on Linux; `AGENTCAD_NO_SANDBOX=1` disables it) that already applies
+to every script build, generated or hand-written. The uploaded-document fence
+(`core/intake.fence_document_text`, above) is **prompt-level defense-in-depth,
+not a security boundary** — a model reading the fenced text could still
+choose to act on an embedded instruction; what actually stops it is the
+generation loop's restricted `ALLOWED_TOOLS` surface (no `delete_part`, no
+proposal tools, no recursion) plus the force-scoping of every part-scoped call
+to the candidate's own scratch id, which holds regardless of what the model
+decides to do with the text. And `spec_green` / the `generated` provenance
+badge is **not authentication of correctness** — it is a re-measured *claim*
+about the geometry the server could observe, not a guarantee that the part is
+safe, fit for purpose, or free of a malicious script body a reviewer never
+read. Treat an accepted generated part the same way you would treat any other
+agent-authored script before running it anywhere that matters.
 
 ### Geometry CI
 

@@ -13,8 +13,12 @@ public tools plus two service seams:
 * ``accept_candidate`` — rename-via-recreate one candidate to a real part id
   (Decision 3), stamp FR11 provenance, delete every scratch id of the gen, and
   land it either directly or through a ``gen/<id>`` proposal branch (Decision
-  9). The frozen-spec contract is enforced HERE (FR8): a candidate that
-  weakened or deleted a frozen intent-spec cannot be accepted.
+  9). It binds to the candidate's **immutable recorded bytes** (never the live,
+  possibly-mutated scratch part) and RE-MEASURES the frozen intent contract
+  against them under the project turn (FR8): a geometry that does not satisfy
+  the frozen specs is refused. The enforcement is a real geometry measurement,
+  not a diff of the candidate's re-declared ``SPECS`` — see
+  ``agent.generate.evaluate_frozen_specs``.
 * ``list_generations`` / ``generation_status`` — read the persisted records.
   The shape is synchronous (``background: false``); the PRD-020 async job shape
   is deferred and documented on the field.
@@ -44,12 +48,21 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import math
 import os
 import re
 from datetime import datetime, timezone
 
 from .model import ConflictError, NotFoundError, ValidationError
 from .tools import Tool, schema
+
+#: Hard ceiling on candidates a single generate_part call may run. A mild
+#: overage (9..:data:`_CANDIDATES_ABSURD`) is clamped to this; an absurd value is
+#: refused outright (the DoS finding: ``candidates=10_000_000`` was accepted and
+#: would spawn ten million kernel-driven loops). Enforced authoritatively here at
+#: the tool boundary — the loop clamps defensively too, but this is the door.
+MAX_CANDIDATES = 8
+_CANDIDATES_ABSURD = 64
 
 # ---------------------------------------------------------------------------
 # Test seam: a scripted client factory. When set, generate_part uses it instead
@@ -97,27 +110,59 @@ def _spec_display(spec: dict) -> dict:
     return {k: v for k, v in spec.items() if k != "fn"}
 
 
-def _freeze_to_json(frozen) -> list:
-    """Serialize ``intent.freeze``'s frozenset to a JSON-safe list.
+# --------------------------------------------------- input caps (DoS guard)
 
-    Each key is ``(kind, name, ((limit_key, value), ...))`` where a value may be
-    a tuple (a list-valued bound). Stored sorted for a stable manifest diff."""
-    out = []
-    for kind, name, items in sorted(frozen):
-        out.append([kind, name,
-                    [[k, list(v) if isinstance(v, tuple) else v]
-                     for k, v in items]])
-    return out
+def _validate_candidates(candidates) -> int:
+    """Clamp/validate the requested candidate count at the tool boundary.
+
+    Coerces to an int (a non-numeric value is a refusal), refuses ``< 1`` and an
+    absurd value outright, and clamps a mild overage to :data:`MAX_CANDIDATES`.
+    An unbounded count is a self-inflicted DoS — each candidate drives a full
+    budgeted kernel loop.
+    """
+    if isinstance(candidates, bool) or not isinstance(candidates, (int, float)):
+        raise ValidationError("candidates must be an integer")
+    if isinstance(candidates, float) and not candidates.is_integer():
+        raise ValidationError("candidates must be a whole number")
+    n = int(candidates)
+    if n < 1:
+        raise ValidationError("candidates must be at least 1")
+    if n > _CANDIDATES_ABSURD:
+        raise ValidationError(
+            f"candidates {n} exceeds the maximum of {MAX_CANDIDATES}")
+    return min(n, MAX_CANDIDATES)
 
 
-def _freeze_from_json(data) -> frozenset:
-    """Rebuild the frozenset ``intent.frozen_spec_violation`` consumes."""
-    keys = []
-    for kind, name, items in data or []:
-        pairs = tuple((k, tuple(v) if isinstance(v, list) else v)
-                      for k, v in items)
-        keys.append((kind, name, pairs))
-    return frozenset(keys)
+def _check_positive_finite(name: str, value) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"{name} must be a positive finite number")
+    if not math.isfinite(value) or value <= 0:
+        raise ValidationError(f"{name} must be a positive finite number")
+
+
+def _validate_budget(budget):
+    """Reject a non-finite or non-positive budget at the tool boundary.
+
+    ``None`` keeps the loop's safe defaults. A dict is the documented shape
+    (``{max_iterations, wall_clock_s, max_tokens?}``): every numeric limit in it
+    must be finite and ``> 0`` (``0``/``-1``/``inf``/``nan`` are refusals). A
+    bare number is treated as a single positive-finite limit. Anything else is a
+    refusal — an unvalidated budget lets ``inf`` iterations spin forever.
+    """
+    if budget is None:
+        return None
+    if isinstance(budget, bool):
+        raise ValidationError("budget must be an object of positive limits")
+    if isinstance(budget, (int, float)):
+        _check_positive_finite("budget", budget)
+        return budget
+    if isinstance(budget, dict):
+        for key, value in budget.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue  # a non-numeric field is the loop's to interpret
+            _check_positive_finite(f"budget.{key}", value)
+        return budget
+    raise ValidationError("budget must be an object of positive limits")
 
 
 # --------------------------------------------------------------- async runner
@@ -275,6 +320,24 @@ def _save_generation(service, project: str, record: dict) -> None:
     service.store.save_manifest(project, manifest)
 
 
+def _drop_generation(service, project: str, generation_id: str) -> bool:
+    """Remove one generation record from the manifest ``generations`` key.
+
+    Returns True if a record was dropped. So a discarded generation's never-
+    accepted scratch parts do not accumulate in the git-tracked manifest forever
+    (the lifecycle finding)."""
+    manifest = service.store.manifest(project)
+    gens = manifest.get("generations")
+    if not isinstance(gens, list):
+        return False
+    kept = [g for g in gens if g.get("generation_id") != generation_id]
+    if len(kept) == len(gens):
+        return False
+    manifest["generations"] = kept
+    service.store.save_manifest(project, manifest)
+    return True
+
+
 # --------------------------------------------------------------- register
 
 def register(registry, service) -> None:
@@ -320,16 +383,20 @@ def register(registry, service) -> None:
             raise GenerationUnavailable()
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("generation prompt must be a non-empty string")
+        # Authoritative input caps (DoS guard): a bounded candidate count and a
+        # finite, positive budget. The loop clamps defensively too, but this is
+        # the door the route calls.
+        candidates = _validate_candidates(candidates)
+        budget = _validate_budget(budget)
 
         from ..agent.intent import (DOCUMENT_RULE, STANDARDS_RULE, draft_specs,
-                                    freeze, normalize_intent)
+                                    normalize_intent)
 
         service.store.manifest(project)  # NotFoundError on an unknown project
 
         prepared, doc_text, fenced = _prepare_inputs(project, images, files)
         intent = normalize_intent(prompt, images=prepared, pdf_text=doc_text)
         draft = draft_specs(intent)
-        frozen = freeze(draft)
 
         # The loop embeds `prompt` verbatim; fold the untrusted document text
         # (fenced) and the two grounding rules into it, because generate.py's
@@ -363,9 +430,13 @@ def register(registry, service) -> None:
             "model": summary.get("model") or "",
             "budget": summary.get("budget"),
             "sources": intent.sources,
+            # The frozen intent IS the frozen contract: accept re-derives the
+            # frozen specs from it and re-measures them against the recorded
+            # bytes. No separate metadata freeze-set is stored (a diff of
+            # re-declared SPECS was the exploitable design — a candidate can
+            # keep a name and neuter its predicate).
             "intent": intent.to_dict(),
             "draft_specs": [_spec_display(s) for s in draft],
-            "frozen_specs": _freeze_to_json(frozen),
             "best": summary.get("best"),
             "candidates": [_candidate_summary(c) for c in summary["candidates"]],
         }
@@ -381,6 +452,17 @@ def register(registry, service) -> None:
         return _accept(service, registry, project, generation_id,
                        int(candidate), part_id, propose,
                        scratch_id, SCRATCH_PREFIX)
+
+    def discard_generation(project: str, generation_id: str) -> dict:
+        """Tear down a never-accepted generation: delete its recorded scratch
+        parts and drop its record so they do not accumulate forever."""
+        record = _find_generation(service, project, generation_id)
+        scratch_ids = [c.get("scratch_id") for c in record.get("candidates", [])
+                       if isinstance(c.get("scratch_id"), str)]
+        removed = _cleanup_scratch(service, project, scratch_ids)
+        dropped = _drop_generation(service, project, generation_id)
+        return {"project": project, "generation_id": generation_id,
+                "removed_scratch": removed, "discarded": dropped}
 
     def list_generations(project: str) -> dict:
         return {"project": project,
@@ -471,6 +553,16 @@ def register(registry, service) -> None:
         accept_candidate,
     ))
     registry.register(Tool(
+        "discard_generation",
+        "Discard a generation you will not accept: delete every recorded "
+        "scratch part of the generation and drop its record from the manifest, "
+        "so never-accepted candidates do not accumulate. Returns {project, "
+        "generation_id, removed_scratch, discarded}.",
+        schema({"project": _PROJ, "generation_id": {"type": "string"}},
+               ["project", "generation_id"]),
+        discard_generation,
+    ))
+    registry.register(Tool(
         "list_generations",
         "List a project's generation records (persisted in the manifest, so "
         "they survive project_restore): {project, generations: [{generation_"
@@ -496,44 +588,32 @@ def register(registry, service) -> None:
 # --------------------------------------------------------------- helpers
 
 def _candidate_summary(cand: dict) -> dict:
-    """The lean per-candidate record persisted in the manifest — no script or
-    full spec report (those live in the scratch part until accept/cleanup)."""
+    """The per-candidate record persisted in the manifest.
+
+    It carries the candidate's **immutable snapshot** — the exact ``script``
+    bytes and their ``content_sha256`` at the moment the candidate settled — so
+    ``accept_candidate`` binds to *those* bytes, never to whatever mutable
+    scratch part currently occupies the id (the TOCTOU fix, Blocker 2). The
+    frozen verdict measured at terminate travels too, for the gallery to render
+    honestly; accept re-measures it under the turn lock regardless."""
     return {
         "candidate": cand.get("candidate"),
         "scratch_id": cand.get("scratch_id"),
         "terminal_state": cand.get("terminal_state"),
         "spec_green": bool(cand.get("spec_green")),
+        "iterations": int(cand.get("iterations") or 0),
         "failing_checks": list(cand.get("failing_checks") or []),
+        "frozen_ok": bool(cand.get("frozen_ok")),
+        "frozen_violations": list(cand.get("frozen_violations") or []),
         "metrics": cand.get("metrics"),
         "params": cand.get("params", {}),
+        "material": cand.get("material"),
+        # The immutable snapshot accept binds to.
+        "script": cand.get("script"),
+        "content_sha256": cand.get("content_sha256"),
         "render_path": cand.get("render_path"),
         "error": cand.get("error"),
     }
-
-
-def _frozen_violations(service, project: str, record: dict,
-                       scratch: str) -> list:
-    """Frozen intent-specs the accepted candidate weakened or deleted (FR8).
-
-    Reads the candidate's DECLARED specs off its scratch part (no build beyond
-    the declaration pass) and diffs them against the frozen set stored on the
-    generation record. Empty when the frozen contract held, or when there is no
-    spec runner to measure with (can't measure -> can't accuse)."""
-    from ..agent.intent import frozen_spec_violation
-
-    frozen = _freeze_from_json(record.get("frozen_specs"))
-    if not frozen:
-        return []
-    runner = getattr(service, "specs", None)
-    if runner is None:
-        return []
-    try:
-        declared = runner.declarations(project, scratch)
-    except Exception:  # noqa: BLE001 — a broken declaration is not a weakening
-        return []
-    candidate_specs = (declared.get("parts", {})
-                       .get(scratch, {}).get("specs", []))
-    return frozen_spec_violation(frozen, candidate_specs)
 
 
 def _target_part_id(part_id, generation_id: str, candidate: int) -> str:
@@ -571,68 +651,108 @@ def _hosted() -> bool:
 
 def _accept(service, registry, project, generation_id, candidate, part_id,
             propose, scratch_id, prefix) -> dict:
+    """Accept one candidate by binding to its IMMUTABLE recorded bytes and
+    RE-MEASURING the frozen intent contract against them (PRD-018 Blockers 2 & 3).
+
+    The bytes come from the generation record's snapshot, never from the live
+    scratch part — a scratch mutated (weakened) after the candidate settled is
+    thus never what lands. Before the write, the server re-derives the frozen
+    specs from the frozen intent and measures them against those exact bytes; a
+    geometry that no longer satisfies the frozen contract is refused. The
+    re-measure and the write happen under the project turn, so nothing races
+    between the check and the stamp.
+    """
     from . import locks
+    from ..agent.generate import content_sha256, evaluate_frozen_specs
 
     record = _find_generation(service, project, generation_id)
     scratch = scratch_id(generation_id, candidate)
-    # The prefix of THIS generation's scratch parts, so cleanup never touches a
-    # sibling generation's in-flight candidates.
-    scratch_prefix = f"{prefix}{_safe_token(generation_id)}_"
+    # The EXACT scratch ids this generation's loop created and recorded. Cleanup
+    # deletes only these — never a live prefix scan of the manifest, which would
+    # delete a user part that merely shares the ``gen_`` prefix (the data-loss
+    # finding: a hand-made ``gen_report_1`` is not ours to remove).
+    scratch_ids = [c.get("scratch_id") for c in record.get("candidates", [])
+                   if isinstance(c.get("scratch_id"), str)]
 
-    # Read the candidate's script/params BEFORE any cleanup or branching. A
-    # missing scratch part means the candidate was already accepted or swept.
-    try:
-        detail = service.get_part(project, scratch)
-    except NotFoundError as exc:
+    # (a) the requested candidate index must EXIST in the record.
+    cand_summary = next((c for c in record.get("candidates", [])
+                         if c.get("candidate") == candidate), None)
+    if cand_summary is None:
+        raise NotFoundError(
+            f"no candidate {candidate} in generation {generation_id!r}")
+
+    # The immutable snapshot: the exact script bytes the candidate settled on.
+    script = cand_summary.get("script")
+    if not isinstance(script, str) or not script.strip():
+        raise ValidationError(
+            f"candidate {candidate} has no recorded script to accept")
+    recorded_digest = cand_summary.get("content_sha256")
+    if recorded_digest and recorded_digest != content_sha256(script):
+        raise ValidationError(
+            "the recorded candidate script fails its own content digest — the "
+            "generation record is corrupt; regenerate")
+
+    # A swept / already-accepted candidate is not re-landable. The live scratch
+    # is ONLY this 'not yet consumed' signal — we bind to the recorded bytes,
+    # never to the (possibly mutated) live scratch part (the TOCTOU fix).
+    if not _exists(service, project, scratch):
         raise NotFoundError(
             f"candidate {candidate} of generation {generation_id!r} is not "
-            f"available (already accepted or discarded)") from exc
-    if detail.get("kind") != "script" or not detail.get("script"):
-        raise ValidationError(
-            f"candidate {candidate} has no script to accept")
+            f"available (already accepted or discarded)")
 
-    violations = _frozen_violations(service, project, record, scratch)
-    if violations:
-        raise ValidationError(
-            "candidate cannot be accepted: it weakened or deleted a frozen "
-            "intent-spec (FR8)",
-            {"frozen_violations": violations})
-
-    script = detail["script"]
-    params = detail.get("params") or {}
-    material = detail.get("material") or "al6061"
+    params = cand_summary.get("params") or {}
+    material = cand_summary.get("material") or "al6061"
     target = _target_part_id(part_id, generation_id, candidate)
-
-    cand_summary = next((c for c in record.get("candidates", [])
-                         if c.get("candidate") == candidate), {})
-    provenance = {
-        "prompt_sha256": record.get("prompt_sha256"),
-        "sources": record.get("sources", []),
-        "model": record.get("model", ""),
-        "iterations": _iterations(cand_summary),
-        "spec_green": bool(cand_summary.get("spec_green")),
-        "created": _now(),
-        # WHO accepted — captured before we stamp the gen identity on the geometry
-        # write, so provenance records the human/agent who accepted while the
-        # git trailer records the generator (Decision 9).
-        "by": locks.current_client_id(),
-    }
+    # A generated part must never land INTO the scratch namespace: the listing
+    # guard hides `gen_*`, so it would be invisible, and cleanup would then
+    # delete a sibling's in-flight candidate that shares the prefix. Refuse an
+    # explicit target in the scratch namespace (a defaulted target is `gp_*`).
+    if target.startswith(prefix):
+        raise ValidationError(
+            f"part_id {target!r} is in the reserved generation scratch "
+            f"namespace ({prefix!r}); choose another id")
 
     do_propose = _should_propose(service, propose)
-
     caller = locks.current_client_id()
-    locks.set_client_id(f"gen:{generation_id}")
-    try:
-        if do_propose:
-            result = _accept_via_proposal(
-                service, project, target, script, params, material,
-                provenance, generation_id, candidate, scratch_prefix, caller)
-        else:
-            result = _accept_direct(
-                service, project, target, script, params, material,
-                provenance, scratch_prefix)
-    finally:
-        locks.set_client_id(caller)
+
+    # (b)/(c) hold the project turn across the re-measure and the write, and
+    # act under the generation identity so audit/attribution is correct.
+    with locks.write_scope(target):
+        # (d) RE-MEASURE the frozen contract on the exact recorded bytes.
+        frozen = evaluate_frozen_specs(
+            service, project, script, params, material,
+            record.get("intent"), affinity=target)
+        if not frozen["frozen_ok"]:
+            raise ValidationError(
+                "candidate cannot be accepted: its geometry does not satisfy "
+                "the frozen intent requirements (FR8)",
+                {"frozen_violations": frozen["frozen_violations"]})
+
+        # (e) provenance stamps the RE-VERIFIED verdict — a part only lands as
+        # spec_green if it was green at terminate AND the frozen re-check held.
+        provenance = {
+            "prompt_sha256": record.get("prompt_sha256"),
+            "sources": record.get("sources", []),
+            "model": record.get("model", ""),
+            "iterations": _iterations(cand_summary),
+            "spec_green": bool(cand_summary.get("spec_green")),
+            "created": _now(),
+            # WHO accepted — the human/agent who accepted (the git trailer
+            # records the generator).
+            "by": caller,
+        }
+        locks.set_client_id(f"gen:{generation_id}")
+        try:
+            if do_propose:
+                result = _accept_via_proposal(
+                    service, project, target, script, params, material,
+                    provenance, generation_id, candidate, scratch_ids, caller)
+            else:
+                result = _accept_direct(
+                    service, project, target, script, params, material,
+                    provenance, scratch_ids)
+        finally:
+            locks.set_client_id(caller)
 
     result.update({"generation_id": generation_id, "candidate": candidate,
                    "generated": provenance})
@@ -640,10 +760,13 @@ def _accept(service, registry, project, generation_id, candidate, part_id,
 
 
 def _iterations(cand_summary: dict) -> int:
+    # The exact model-turn count the loop recorded on the candidate (the
+    # summary carries it verbatim). Fall back to a coarse 1/0 only for an
+    # older record that predates the exact count.
+    exact = cand_summary.get("iterations")
+    if exact is not None:
+        return int(exact or 0)
     metrics = cand_summary.get("metrics")
-    # The persisted summary carries no iteration_log; derive a coarse count
-    # from the terminal state where possible, else 0 (provenance is a record,
-    # not a meter). A spec_green candidate ran at least one measured iteration.
     return 1 if cand_summary.get("spec_green") or metrics else 0
 
 
@@ -669,35 +792,38 @@ def _stamp_and_build(service, project, target, script, params, material,
 
 
 def _accept_direct(service, project, target, script, params, material,
-                   provenance, scratch_prefix) -> dict:
+                   provenance, scratch_ids) -> dict:
     if _exists(service, project, target):
         raise ConflictError(
             f"part {target!r} already exists; pass a fresh part_id")
+    # Build FIRST, then clean — a delete-then-fail must never lose the scratch
+    # parts before the new part is safely written.
     _stamp_and_build(service, project, target, script, params, material,
                      provenance)
-    removed = _cleanup_scratch(service, project, scratch_prefix)
+    removed = _cleanup_scratch(service, project, scratch_ids)
     return {"part_id": target, "direct": True, "proposal": None,
             "removed_scratch": removed}
 
 
 def _accept_via_proposal(service, project, target, script, params, material,
                          provenance, generation_id, candidate,
-                         scratch_prefix, caller) -> dict:
+                         scratch_ids, caller) -> dict:
     """Land the accepted part on a ``gen/<id>`` branch and open a proposal.
 
-    Order matters: the scratch parts are cleaned on the default branch FIRST
-    (so the branch forks a clean tree and the proposal diff shows only the new
-    part), then the branch is created + switched under the ``gen:<id>``
-    identity, the part is landed there, and a proposal is opened source ->
-    default. The caller (a browser/agent on the default branch) is untouched —
-    branches are per-client-id.
+    Order matters for BOTH a clean diff and no delete-then-fail data loss. The
+    branch is forked from the (still scratch-bearing) default and the part is
+    built on it, then the proposal is opened — the diff is new-part-only because
+    the scratch parts sit on BOTH source and target and cancel. Only AFTER the
+    proposal is safely open are the scratch parts cleaned, on the gen branch and
+    then the default, so a failure before the proposal exists never destroys the
+    candidate's still-re-acceptable scratch part (the delete-then-fail finding).
+    The caller (a browser/agent on the default branch) is untouched — branches
+    are per-client-id.
     """
     branches = service.branches
     proposals = service.proposals
     branch = f"gen/{_safe_token(generation_id)}"
-
-    # Clean the scratch parts on the current (default) tree before forking.
-    removed = _cleanup_scratch(service, project, scratch_prefix)
+    default = branches.current(project)
 
     branches.create(project, branch)
     branches.switch(project, branch)
@@ -708,6 +834,14 @@ def _accept_via_proposal(service, project, target, script, params, material,
         project, branch, title=f"Generated part {target}",
         description=f"Accepted candidate {candidate} of generation "
                     f"{generation_id}.")
+
+    # The proposal is open: only NOW clean the scratch parts (never before — a
+    # delete-then-fail would leave nothing landed and the candidate un-re-
+    # acceptable). Clean the gen branch we are on, then the default, so both
+    # sides of the diff stay scratch-free and the diff is new-part-only.
+    removed = _cleanup_scratch(service, project, scratch_ids)
+    branches.switch(project, default)
+    _cleanup_scratch(service, project, scratch_ids)
     return {"part_id": target, "direct": False,
             "proposal": proposal.get("proposal") if isinstance(proposal, dict)
             else proposal,
@@ -719,22 +853,26 @@ def _exists(service, project: str, part_id: str) -> bool:
     return any(e.get("id") == part_id for e in manifest.get("parts", []))
 
 
-def _cleanup_scratch(service, project: str, prefix: str) -> list:
-    """``delete_part`` every scratch part of the CURRENT branch, reading the
-    RAW manifest — not ``service.get_project``, which the listing guard has
-    wrapped to hide exactly these parts (``generate.cleanup_scratch`` iterates
-    ``get_project`` and so would find none once the guard is installed)."""
+def _cleanup_scratch(service, project: str, scratch_ids) -> list:
+    """``delete_part`` exactly the recorded *scratch_ids* of ONE generation on
+    the CURRENT branch — never a prefix scan of the live manifest.
+
+    A prefix scan would delete a user part that merely shares the ``gen_``
+    prefix (the data-loss finding: a hand-made ``gen_report_1`` is not ours to
+    remove). We delete only the exact ids the loop created and recorded for this
+    generation, and only if they still exist. Reads the RAW manifest for the
+    existence check — not ``service.get_project``, which the listing guard wraps
+    to hide exactly these parts.
+    """
     removed = []
-    try:
-        manifest = service.store.manifest(project)
-    except Exception:  # noqa: BLE001 — a vanished project has nothing to clean
-        return removed
-    for entry in list(manifest.get("parts", [])):
-        pid = entry.get("id")
-        if isinstance(pid, str) and pid.startswith(prefix):
-            try:
-                service.delete_part(project, pid)
-                removed.append(pid)
-            except Exception:  # noqa: BLE001 — best-effort teardown
-                pass
+    for pid in scratch_ids or []:
+        if not isinstance(pid, str) or not pid:
+            continue
+        if not _exists(service, project, pid):
+            continue
+        try:
+            service.delete_part(project, pid)
+            removed.append(pid)
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
     return removed

@@ -155,6 +155,7 @@ def test_oversized_image_is_a_validation_error(tmp_path, monkeypatch):
 
 
 def test_pdf_rasterizes_bounded_pages(tmp_path):
+    pytest.importorskip("pypdfium2")  # the [pdf] extra; skip when absent (FEM idiom)
     path = _write(tmp_path, "sheet.pdf", _make_pdf("BOLT SQUARE 31.0 mm M3", 3))
     results = intake.prepare_vision([path], max_pages=2)
     assert len(results) == 2  # 3-page PDF capped at max_pages=2
@@ -168,12 +169,14 @@ def test_pdf_rasterizes_bounded_pages(tmp_path):
 
 
 def test_pdf_text_extraction_round_trips(tmp_path):
+    pytest.importorskip("pypdfium2")
     path = _write(tmp_path, "spec.pdf", _make_pdf("BOLT SQUARE 31.0 mm M3", 1))
     [result] = intake.prepare_vision([path])
     assert "31.0 mm M3" in result["text"]
 
 
 def test_pdf_text_is_truncated_to_the_total_budget(tmp_path):
+    pytest.importorskip("pypdfium2")
     # Two pages, tiny total budget: page 1 consumes it, page 2 gets no text.
     path = _write(tmp_path, "long.pdf", _make_pdf("ABCDEFGHIJ", 2))
     results = intake.prepare_vision([path], max_text_chars=5)
@@ -220,5 +223,5 @@ def test_document_text_is_data_constant_states_the_rule():
 
 
 def test_pdf_available_probes_pypdfium2():
-    # pypdfium2 is installed in the dev venv, so the probe is truthy here.
+    pytest.importorskip("pypdfium2")  # only meaningful when the [pdf] extra is present
     assert intake.pdf_available() is True

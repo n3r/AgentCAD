@@ -719,6 +719,22 @@ trust it. A `budget_exhausted` result is not a failure hidden from you; it is
 the system telling you honestly that it ran out of time before converging,
 with its best attempt on the table for you to judge or discard.
 
+**What "spec green" and "reference data" do and do not protect you from.** A
+generated part is a Python script, and it **is arbitrary Python** — the same
+as a script you or anyone else wrote by hand. Generation does not sandbox it
+any more tightly than any other part in your project; the isolation that
+exists comes from the server's general script-execution confinement, not from
+anything specific to this feature. Attaching a reference image or PDF is safe
+in the ordinary sense (its text is fenced off from the model as data, never
+followed as an instruction), but that fence is a **prompt-level safeguard,
+not a security wall** — treat it the way you'd treat a spam filter, not a
+lock. And the green "spec_green" badge and the **generated** provenance tag
+are not a certificate that the part is safe or correct; they mean the server
+re-measured the geometry against the constraints it could check, nothing
+more. Review an accepted generated part's script the same way you would
+review a script from any other agent before you trust it with anything that
+matters.
+
 ## The v2 capabilities
 
 AgentCAD v2 adds imports, richer materials, assembly mates, 2D drawings, and

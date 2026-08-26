@@ -1014,10 +1014,23 @@ grounds nothing, deliberately, rather than letting the model guess a bolt
 circle. The same pass structures the obvious free-text constraints (mass,
 wall, envelope, screw size, material, quantity) into a **draft `SPECS`**
 block built from the real `toolkit.specs` constructors, which is then
-**frozen** and diffed against the accepted candidate's own declared `SPECS`
-at `accept_candidate` — see [Generation](agent-api.md#generation-prd-018)
-for the exact mechanics and the honest caveat that the diff runs at accept,
-not inside the loop's own terminate check.
+**frozen** — enforced by RE-MEASURING those frozen specs against the
+candidate's built geometry server-side (the `frozen_measure` kernel op builds
+the candidate's UNMODIFIED recorded bytes and returns kernel-computed metrics;
+`agent.intent.frozen_verdict` / `agent.generate.evaluate_frozen_specs` evaluate
+the frozen bounds against them), never by diffing the candidate's own
+re-declared `SPECS` metadata and never by anything the candidate's `build()`
+can observe (a `build()` can rewrite `SPECS` in its own module namespace, so a
+metadata diff is blind to a neutered predicate that kept its name — and a
+measurement that appends "probe" SPECS to the script is observable by `build()`,
+which then serves compliant geometry only while probed; measuring the unmodified
+bytes closes both). The re-measurement runs **inside the
+loop** every time a candidate's own specs come back green — gating
+`spec_green` itself, so a candidate short of the frozen contract keeps
+iterating rather than terminating — and **again at `accept_candidate`**,
+against the candidate's immutable recorded script bytes, as a second,
+independent check before anything lands. See
+[Generation](agent-api.md#generation-prd-018) for the exact mechanics.
 
 **The document-text-is-data security invariant.** `core/intake.py` prepares
 uploaded images/PDFs for vision (PDF rasterization is gated on the optional
