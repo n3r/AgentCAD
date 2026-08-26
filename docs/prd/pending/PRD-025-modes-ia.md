@@ -1,11 +1,11 @@
-# PRD-025 — Modes: Build · Test · Produce · Library · Market
+# PRD-025 — Modes: Design · Testing · Production · Marketplace
 
 - **Status:** pending
-- **Phase:** v5 — daily-driver depth (frame); Produce/Market content matures in v6
+- **Phase:** v5 — daily-driver depth (frame); Production/Marketplace content matures in v6
 - **Created:** 2026-08-09
-- **Origin:** founder idea #1 (Aug 2026), engineering-reviewed; supported by competitive analysis
-- **Depends on:** PRD-026 (shell implements the frame — hard) · content per tab: PRD-003/019/030 (Test), PRD-021/022 (Produce), PRD-011 (Library), PRD-031 (Market) — all soft/staged
-- **Related:** PRD-016, PRD-027, PRD-029
+- **Origin:** founder idea #1 (Aug 2026), engineering-reviewed; direction validated by the Aug-2026 UX study (see the third callout below)
+- **Depends on:** PRD-026 (shell implements the frame — completed) · content per tab: PRD-003/035/019/030 (Testing), PRD-021/022/036/037 (Production), PRD-031/031c + PRD-011 (Marketplace, Library folded in) — all soft/staged
+- **Related:** PRD-016, PRD-027, PRD-029, PRD-034 (the Design tab's chassis)
 
 
 > **Naming (settled 2026-08-24, PRD-005 close-out).** This concept was
@@ -41,6 +41,30 @@
 > plausible option is dropping "mode" for the tab bar entirely and
 > calling it what it is ("phase", "tab", or the founder's per-tab nouns
 > alone), but that choice is this PRD's to make, not PRD-005's.
+
+> **Direction validated (2026-08-25, UX study).** A four-round interactive
+> mockup study (internal artifacts) tested this PRD's IA against novel
+> alternatives; the founder rejected every novel paradigm and validated a
+> "familiar workstation": desktop-CAD conventions (SolidWorks/Fusion/
+> FreeCAD/Bambu Studio) rendered in the product's existing visual language,
+> then hardened by an adversarial two-reviewer pass. Resolutions folded
+> into this PRD: **(1)** the tab set is **four, in the founder's own
+> nouns — Design · Testing · Production · Marketplace** — with Library
+> folded into Marketplace as its "My Library" tab plus insert flows (this
+> settles the "five tabs may be one too many" risk in exactly the
+> direction it anticipated, inverted); **(2)** the tab-bar *container*
+> word is still owed its rename per the PRD-005 ruling above — "phase" and
+> plain "tab" lead; the per-tab nouns themselves are settled; **(3)** the
+> Design tab's chassis is specified by PRD-034 (feature tree + timeline +
+> properties + script drawer, three-way selection sync) and per-tab
+> content by PRD-035 (Testing), PRD-036/037 (Production), PRD-031a/b/c
+> (Marketplace); **(4)** two review-derived invariants bind every tab:
+> *state honesty* — derived results (checks, studies, slices, outputs)
+> are keyed to input hashes and render an explicit out-of-date state,
+> never a stale number as current (FR5's freshness model, generalized) —
+> and *affordance honesty* — FR3's "no dead controls" extended: any
+> not-yet-wired control is visually distinct and says so, never styled
+> identically to a live one.
 
 ## Problem & motivation
 
@@ -79,10 +103,10 @@ per-process rules are stable and automatable).
 
 ## Goals
 
-- G1. One project, five modes over it: **Build** (model), **Test**
-  (prove), **Produce** (make), **Library** (reuse), **Market** (share/find);
-  switching is instant and stateless-safe (nothing is "open" per tab that
-  can be lost).
+- G1. One project, four tabs over it: **Design** (model), **Testing**
+  (prove), **Production** (make), **Marketplace** (share/find, with
+  Library as its "My Library" side); switching is instant and
+  stateless-safe (nothing is "open" per tab that can be lost).
 - G2. Each mode composes existing capabilities — no capability is
   *only* reachable through a mode (tools/REST remain universal).
 - G3. Produce is process-profile-driven: choosing FDM vs CNC-3ax vs sheet
@@ -105,35 +129,41 @@ per-process rules are stable and automatable).
 
 ## Experience
 
-A mode bar sits at the top of the workbench (under the toolbar, or as
-the leftmost rail — resolved in PRD-026's shell design): **Build · Test ·
-Produce · Library · Market**, keyboard-switchable (`1–5` when not typing),
-deep-linkable (`/p/<project>/test`), with per-tab badge chips (Test: failing
-specs count; Produce: DFM violations for the active profile).
+A tab bar sits at the top of the workbench (under the toolbar, or as
+the leftmost rail — resolved in PRD-026's shell design): **Design ·
+Testing · Production · Marketplace**, keyboard-switchable (`1–4` when not
+typing), deep-linkable (`/p/<project>/testing`), with per-tab badge chips
+(Testing: failing specs count; Production: DFM violations for the active
+profile).
 
-**Build** is today's workbench (tree, viewport, inspector, sketcher,
-push/pull, chat dock) — plus PRD-016/026/027 improvements as they land.
+**Design** is today's workbench (tree, viewport, inspector, sketcher,
+push/pull, chat dock) — grown into the familiar chassis PRD-034 specifies
+(feature tree + history timeline + properties + script drawer, three-way
+selection sync), plus PRD-016/027 improvements as they land.
 
-**Test** re-centers the same viewport on evidence: a left rail of *checks* —
-specs (PRD-003) with pass/fail, analysis results (wall, section, inertia,
-curvature), FEM cases, motion sweeps and dynamics runs (PRD-030), studies
-(PRD-019) — each row expandable to its result, each re-runnable. The
-viewport overlays the selected check (wall-thickness heat spot, section
-plane, mode shape animation). The agent dock's placeholder changes: "ask
-about margins, loads, or what to test next."
+**Testing** re-centers the same viewport on evidence: a left rail of
+*checks* — specs (PRD-003) with pass/fail, analysis results (wall,
+section, inertia, curvature), simulation studies (PRD-035: persisted
+setups, hash-keyed results, staleness), motion sweeps and dynamics runs
+(PRD-030), optimization studies (PRD-019) — each row expandable to its
+result, each re-runnable. The viewport overlays the selected check
+(wall-thickness heat spot, section plane, mode shape animation, study
+colormaps). The agent dock's placeholder changes: "ask about margins,
+loads, or what to test next."
 
-**Produce** opens with a per-part process assignment table (part → profile:
-FDM/SLA/SLS/CNC-3ax/sheet/IM/"COTS — purchased"), then, for the active
-profile: DFM findings with viewport locations (PRD-021), cost estimate,
-required outputs (STEP AP242, drawings, flat patterns, sliced 3MF via
-PRD-022) with freshness state (stale if geometry changed since last
-generation), and quote actions. Switching profile swaps all four panels —
-the founder's swappable module, made of packs.
+**Production** opens with the routing plan (PRD-036: part → route —
+print/CNC/order/provided — with costs, leads and readiness), then, per
+route: DFM findings with viewport locations (PRD-021), cost estimate,
+required outputs (STEP AP242, drawings, flat patterns, sliced jobs via
+PRD-037/022) with freshness state (stale if geometry changed since last
+generation), and quote actions. Switching a route swaps its panels — the
+founder's swappable module, made of packs.
 
-**Library** is the personal/org shelf (PRD-011): installed packages, own
-saved reusable parts, search; drag a fastener into the assembly and it
-arrives mate-ready. **Market** is the public hub (PRD-031): browse, inspect
-(customizer preview via PRD-007), add-to-library.
+**Marketplace** is the public hub (PRD-031a/b/c: browse, galleries,
+comments/ratings, remix, customizer preview via PRD-007) with **My
+Library** as its personal shelf (PRD-011): installed packages, own saved
+reusable parts, collections, search; drag a fastener into the assembly
+and it arrives mate-ready.
 
 **Agent path.** `get_mode {project}` / part of context envelope: the
 chat agent receives `{mode, process_profile?, selection}` on each turn;
@@ -143,11 +173,11 @@ silent). Mode context selects default skills (PRD-029).
 
 ## Functional requirements
 
-- FR1. Mode bar with the five tabs; switch < 100 ms perceived (no
-  reload; panes mount/unmount over live state); active mode persisted
+- FR1. Tab bar with the four tabs; switch < 100 ms perceived (no
+  reload; panes mount/unmount over live state); active tab persisted
   per project (localStorage) and restored.
-- FR2. Deep links `/p/<project>/<mode>` resolve on load; unknown
-  mode falls back to Build.
+- FR2. Deep links `/p/<project>/<tab>` resolve on load; unknown
+  tab falls back to Design.
 - FR3. Tabs render capability-aware states: fully functional when backing
   PRDs are present; a designed empty state (what this tab will do + what to
   install/enable) otherwise. No dead controls.
@@ -167,11 +197,11 @@ silent). Mode context selects default skills (PRD-029).
 - FR8. Agent context envelope carries `{mode, process_profile,
   selection}`; `set_mode {project, mode}` tool exists and emits a
   `mode_changed` event the UI follows.
-- FR9. Keyboard: `1–5` switches modes (guarded against text inputs);
+- FR9. Keyboard: `1–4` switches tabs (guarded against text inputs);
   the shortcut map lives in PRD-026's shortcut system.
-- FR10. All five tabs work identically self-hosted and in cloud mode
-  (PRD-005); Market in local-only mode points at the public marketplace
-  read-only (PRD-031 details the offline story).
+- FR10. All four tabs work identically self-hosted and in cloud
+  deployments (PRD-005); Marketplace in local-only deployments points at
+  the public marketplace read-only (PRD-031 details the offline story).
 
 ## Agent surface
 
@@ -204,29 +234,32 @@ read the same via `get_mode`.
 
 ## MVP & phasing
 
-- **MVP (with 026):** the bar + router + deep links; Build = current
-  workbench; Test with specs/analysis/FEM rows over existing tools; Library
-  as read-only view of installed packages (011 MVP); Produce and Market as
-  designed empty states. Agent envelope + `get/set_mode`.
-- **Phase 2 (021/022 land):** Produce live — profiles, DFM findings, cost,
-  outputs freshness, first quote connector.
-- **Phase 3 (031 lands):** Market live; Library gains publish flow.
+- **MVP:** the bar + router + deep links; Design = current workbench;
+  Testing with specs/analysis/FEM rows over existing tools; Marketplace's
+  My Library tab as read-only view of installed packages (011); Production
+  and the public Marketplace as designed empty states. Agent envelope +
+  `get/set_mode`.
+- **Phase 2 (021/022/036/037 land):** Production live — routing plan,
+  DFM findings, cost, outputs freshness, first quote connector.
+- **Phase 3 (031b/c land):** public Marketplace live; My Library gains
+  the publish flow.
 - **Phase 4:** overlays for every check kind; badge tuning; mode-aware
   skill auto-loading (029).
 
 ## Acceptance criteria
 
-- AC1. Browser session: switch through all five tabs on the rocketry
-  example — Build fully functional, Test lists and re-runs a spec + wall
-  check with overlay, Library lists the fastener package, Produce/Market
-  show their designed empty states (pre-021/031) — zero console errors.
-- AC2. Deep link straight into `/p/rocketry/test` lands on Test with state
-  restored (test via headless browser).
+- AC1. Browser session: switch through all four tabs on the rocketry
+  example — Design fully functional, Testing lists and re-runs a spec +
+  wall check with overlay, Marketplace's My Library tab lists the
+  fastener package, Production and the public Marketplace show their
+  designed empty states (pre-021/031) — zero console errors.
+- AC2. Deep link straight into `/p/rocketry/testing` lands on Testing
+  with state restored (test via headless browser).
 - AC3. `set_part_process` assigns FDM to the enclosure; with PRD-021
-  installed the Produce tab shows its violations; without it, the tool is
-  absent from the registry (capability rule, test both ways).
-- AC4. Agent asked "what's failing?" while the user is in Test answers from
-  spec/check state without the user naming the project or mode
+  installed the Production tab shows its violations; without it, the tool
+  is absent from the registry (capability rule, test both ways).
+- AC4. Agent asked "what's failing?" while the user is in Testing answers
+  from spec/check state without the user naming the project or tab
   (envelope test).
 - AC5. `set_mode` from chat switches the visible tab live via the WS
   event (browser-verified).
@@ -235,17 +268,17 @@ read the same via `get_mode`.
 
 ## Risks & open questions
 
-- **IA risk — five tabs may be one too many at first:** Market could start
-  as a section inside Library. Decide in design review with real users;
-  the router cost is identical either way.
-- **Naming:** "Produce" vs founder's "Production" vs "Make" — pick in
-  design; this PRD uses Produce for the verb-parallel set (Build/Test/
-  Produce), and the roadmap keeps the founder's intent either way. **A
-  second, higher-stakes naming decision belongs in the same review**: the
-  callout at the top of this document records that PRD-005 has claimed
-  "mode" for its org/mode/project tenancy model, so this PRD's
-  own use of "mode" for its five tabs (title included) must be renamed
-  before ship — ruled in PRD-005's design spec, decided here.
+- **IA risk — RESOLVED (2026-08-25):** the tab count question closed in
+  the UX study: four tabs, Library folded into Marketplace as "My
+  Library" — founder-validated on an interactive mockup, the inverse of
+  the originally suspected merge direction.
+- **Naming — half resolved:** the per-tab nouns are settled in the
+  founder's own words (Design · Testing · Production · Marketplace; the
+  UX study's mockups shipped those labels). Still open, and owed before
+  ship per the PRD-005 ruling recorded above: the tab-bar *container*
+  word (this PRD provisionally says "tab"; "phase" is the alternative) —
+  decided in this PRD's design review, including whether `get/set_mode`
+  and `mode_changed` follow the rename.
 - **Test-tab unification** must not fork analysis state: the checks rail
   reads the same stores tools write, or freshness will lie. The staleness
   model (cache-key comparison) needs a test per check kind.
