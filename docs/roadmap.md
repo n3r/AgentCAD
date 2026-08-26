@@ -165,7 +165,7 @@ commit. The 031a licensing precondition is closed.
 
 | PRD | Feature | Status | Origin | Depends on |
 |---|---|---|---|---|
-| [018](prd/pending/PRD-018-task-to-part-generation.md) | Task-to-part generation — kernel-grounded iterate-until-spec-green loop; multimodal; candidates; proposals out | pending | analysis | 003 · 002 (soft) |
+| [018](prd/completed/PRD-018-task-to-part-generation.md) | Task-to-part generation — kernel-grounded iterate-until-spec-green loop; multimodal; candidates; proposals out | completed (PR #37, MVP + Phase 2: draft→build→render→measure→revise loop reusing the chat client_factory, multimodal intake (image + PDF via the `[pdf]` extra), N candidates, NEMA grounding, provenance, proposal/direct accept, bench `generate_from_prompt`; integrity centerpiece — the frozen intent contract is re-measured server-side against built geometry via the `frozen_measure` kernel op, un-forgeable and un-observable to `build()`; NEMA hole-pattern feature checks + background jobs + model-tiering deferred) | analysis | 003 · 002 (soft) |
 | [019](prd/pending/PRD-019-design-studies-optimization.md) | Design studies & optimization — sweeps/DOE/optimizers over PARAMS with spec/FEM objectives; Pareto reports | pending | analysis | 003 · 012 · 020 (soft) |
 | [020](prd/pending/PRD-020-jobs-fleet-orchestration.md) | Jobs & fleet orchestration — persisted queue, quotas, roles; agents coordinate only through branches/proposals | pending | analysis | 001 · 005 · 006 |
 | [021](prd/pending/PRD-021-dfm-rule-packs-costing.md) | DFM rule packs & costing — open per-process rules run by the kernel with located violations; cost models; `check_dfm` as spec/CI gate | pending | analysis + idea 1b | 003 (soft) |

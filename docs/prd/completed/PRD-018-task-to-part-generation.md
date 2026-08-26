@@ -1,6 +1,6 @@
 # PRD-018 — Task-to-part generation (kernel-grounded)
 
-- **Status:** pending
+- **Status:** completed — merged to main in PR #37 (MVP + most of Phase 2; the frozen intent contract is re-measured server-side against built geometry via the `frozen_measure` kernel op — un-forgeable and un-observable to `build()`; NEMA hole-pattern feature checks, background jobs, and model-tiering deferred)
 - **Phase:** v6 — generative engineering & the manufacturing bridge
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
